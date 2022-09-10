@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"github.com/solovev/steam_go"
 	"github.com/gorilla/websocket"
+	"sync"
+	"time"
 )
 
 type User struct {
@@ -41,7 +43,7 @@ func main() {
 	rout.Use(sessions.Sessions("sessions", store))
 	rout.Use(GetUser())
 
-
+	
 	rout.GET("/", func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})
@@ -73,7 +75,11 @@ func main() {
 		}
 	})
 
-	rout.GET("/websock", WsServer)
+	hub := newHub()
+	rout.GET("/websock", func(c *gin.Context) {
+		c.Set("Hub", *hub) //all websocket connections should have the same hub (server)
+		WsServer(c)
+	})
 
 	rout.GET("/queue", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "queue.html", gin.H{})
@@ -133,10 +139,10 @@ func GetElo(steamid string) int {
 }
 
 type PlayerAdded struct {
-	Connection *websocket.Conn
+	Connection *connection
 	Steamid string
 	Elo int
-	SecsWaiting int
+	WaitingSince time.Time
 	//this type seems bare and the map seems unnecessary,
 	//but if i build this out we will need more than 1 value so a key/value map doesnt make sense
 	//example of further properties: maps desired, server location, classes desired
@@ -146,9 +152,12 @@ type PlayerEntries map[string]PlayerAdded //this is a type
 var GameQueue = make(PlayerEntries) //this is an instance of the type
 
 func WsServer(c *gin.Context) {
+	h, _ := c.Get("Hub")
+	hub := h.(Hub) //cast the context to Hub type
+
 	usr, lgdin := c.Get("User")
 	if lgdin {
-		steamid := usr.(User).id
+		//steamid := usr.(User).id	//cast the usr context to a User type, then get the id
 		w := c.Writer
 		r := c.Request
 		//"Upgrade" the HTTP connection to a WebSocket connection, and use default buffer sizes
@@ -163,53 +172,39 @@ func WsServer(c *gin.Context) {
 			return
 		}
 
-		QueueUpdate(false, steamid, conn)
-
-		for {
-	/*
-		messageType, msg, err := conn.ReadMessage() //msg is byte slice, messageType is either websocket.BinaryMessage or websocket.TextMessage
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		if messageType == websocket.BinaryMessage {
-			log.Println(string(msg))
-		} else {
-			log.Println(msg)
-		}
-	*/
-			var qmsg Message
-			err2 := conn.ReadJSON(&qmsg)
-			if err2 != nil {
-				fmt.Printf("Error reading json: %s\n", err2.Error())
-				if websocket.IsCloseError(err2, 1001) {
-					fmt.Printf("Disconnection (1001)\n")
-					break
-				}
-				continue
-			}
-			herr := HandleMessage(qmsg, steamid, conn)
-			if herr != nil {
-				conn.WriteMessage(websocket.TextMessage, []byte(herr.Error()))
-			}
-		}
+		c := &connection{
+			sendText: make(chan []byte, 256), 
+			sendJSON: make(chan interface{}, 1024),
+			h: &hub, 
+			user: usr.(User),
+		} //create our ws connection object
+		hub.addConnection(c) //Add our connection to the hub
+		defer hub.removeConnection(c) //Remove
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go c.writer(&wg, conn)
+		go c.reader(&wg, conn)
+		wg.Wait()
+		conn.Close()
 	}
 }
 
-func QueueUpdate(joining bool, steamid string, conn *websocket.Conn) {
+func QueueUpdate(joining bool, conn *connection) { //The individual act of joining/leaving the queue. Should be followed by QueueAck
+	steamid := conn.user.id
 	if joining { //add to queue
-			GameQueue[steamid] = PlayerAdded{Connection: conn, Steamid: steamid, Elo: GetElo(steamid), SecsWaiting: 0}//steamid//lol
+			GameQueue[steamid] = PlayerAdded{Connection: conn, Steamid: steamid, Elo: GetElo(steamid), WaitingSince: time.Now()}//steamid//lol
 	} else { //remove from queue
 			delete(GameQueue, steamid) //remove steamid from gamequeue
 	}
-	//simpler ack: ack := &AckQueue{Type:"AckQueue", NewQueueStatus: !joining}
-	ack := &AckQueue{Type:"AckQueue", NewQueueStatus: !joining, Queue: GameQueue}
-	//todo: pass a slice of steamids instead of the server's whole info of the gamequeue
-	//https://stackoverflow.com/questions/21362950/getting-a-slice-of-keys-from-a-map
-	err := conn.WriteJSON(ack)
-	if err != nil {
-		panic(err)
-	}
+
+	QueueAck(conn.h)
 }
 
+func QueueAck(hub *Hub) {
+	for c := range hub.connections {
+		_, ok := GameQueue[c.user.id] //check if key exists in map
+		ack := &AckQueue{Type:"AckQueue", Queue: GameQueue, IsInQueue: ok}	//send a personalized ack out to each client, including confirmation that they're still inqueue
+		c.sendJSON <- ack
+	}
+}
 

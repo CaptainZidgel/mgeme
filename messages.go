@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"encoding/json"
 	"errors"
-	"github.com/gorilla/websocket"
 )
 
 type Message struct {
@@ -24,10 +23,10 @@ type QueueJoinLeave struct {
 type AckQueue struct {
 	Type string `json:"type"`
 	Queue PlayerEntries `json:"queue"`
-	NewQueueStatus bool `json:"newstatus"`
+	IsInQueue bool `json:"isInQueue"`
 }
 
-func HandleMessage(msg Message, steamid string, ws *websocket.Conn) error { //get steamid from server (which gets it from browser session after auth), don't trust users to send it in json. pass the websocket connection so we can send stuff back if needed, or pass it to further functions
+func HandleMessage(msg Message, steamid string, conn *connection) error { //get steamid from server (which gets it from browser session after auth), don't trust users to send it in json. pass the websocket connection so we can send stuff back if needed, or pass it to further functions
 	fmt.Println(msg.Type)
 	if msg.Type == "QueueUpdate" { // {type: "QueueUpdate", payload: {joining: true/false}}
 		var res QueueJoinLeave
@@ -40,7 +39,7 @@ func HandleMessage(msg Message, steamid string, ws *websocket.Conn) error { //ge
 				return err
 			}
 		}
-		QueueUpdate(res.Joining, steamid, ws)
+		QueueUpdate(res.Joining, conn)	//Update the server's master queue
 	} else if msg.Type == "i dont know actually let me think about that" {
 		//res := MessageType
 		//JSON.Unmarshall(msg.Payload, &res)

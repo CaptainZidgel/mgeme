@@ -55,13 +55,10 @@ const app = Vue.createApp({
 		this.socket.onmessage = (event) => {
 			let data = JSON.parse(event.data)
 			console.log(`Received ${event.data}, ${data.type}.`, this)
-/*			if (data.type == "AckQueue") { //{type: "AckQueue", result: true/false} ack sends back "true" if user has joined, false if user has left. i have monumentally confused myself. this is like my 3rd hour on this.
-				this.inQueue = !data.result
-				console.log("Updating to", data.result, this.inQueue)
-			} */
+
 			if (data.type == "AckQueue") { //{type: "AckQueue", queue: {steamids: {queue info}} the queue map will eventually be changed to a list
 				let ids = Object.keys(data.queue) //this line should become deprecated before production, i.e. let ids = data.queue
-				this.inQueue = !data.newstatus
+				this.inQueue = data.isInQueue
 				this.serverQueue = ids
 			}
 		}
