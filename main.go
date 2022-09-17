@@ -13,10 +13,25 @@ import (
 	"github.com/gorilla/websocket"
 	"sync"
 	"time"
+	"math/rand"
+	"database/sql"
+	"github.com/go-sql-driver/mysql"
+	"github.com/leighmacdonald/steamid/v2/steamid"
+	"io/ioutil"
+	"encoding/json"
 )
 
 type User struct {
 	id string
+	elo int
+}
+
+//a Json object for loading your sql configuration. The fields are just named user, pass, addr, dbName
+type sqlConfig struct {
+	User string	//fields need to be exported to be JSON compatible
+	Pass string
+	Addr string
+	DbName string
 }
 
 func GetUser() gin.HandlerFunc { //middleware to set contextual variable from session
@@ -25,6 +40,11 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 		session := sessions.Default(c)
 		if id := session.Get("steamid"); id != nil {
 			user.id = id.(string)
+			elo, err := GetElo(user.id)
+			if err != nil {
+				panic(err)
+			}
+			user.elo = elo
 		}
 		if user.id != "" {
 			c.Set("User", user)
@@ -35,6 +55,8 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 	}
 } //this is fairly superfluous at this point but if i build out the User type I will want to add stuff here probably
 
+var SelectElo *sql.Stmt
+
 func main() {
 	rout := gin.Default()
 	rout.HTMLRender = loadTemplates("./views")
@@ -42,7 +64,6 @@ func main() {
 	store := cookie.NewStore([]byte("SECRET"))
 	rout.Use(sessions.Sessions("sessions", store))
 	rout.Use(GetUser())
-
 	
 	rout.GET("/", func(c *gin.Context) {
 		c.Status(http.StatusOK)
@@ -84,7 +105,29 @@ func main() {
 	rout.GET("/queue", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "queue.html", gin.H{})
 	})
+	
+	content, err := ioutil.ReadFile("./DbCfg.json")
+	if err != nil { log.Fatal("Error opening database config: ", err) }
+	var conf sqlConfig
+	err = json.Unmarshal(content, &conf)
+	if err != nil { log.Fatal("Error unmarshalling: ", err) }
+	
+	dbCfg := mysql.NewConfig()	//create a new config object with default values
+	dbCfg.User = conf.User		//insert my values into the config object... (username/password for sql user, etc)
+	dbCfg.Passwd = conf.Pass
+	dbCfg.Net = "tcp"
+	dbCfg.Addr = conf.Addr
+	dbCfg.DBName = conf.DbName
+	db, err := sql.Open("mysql", dbCfg.FormatDSN())	//opens a sql connection, the FormatDSN() function turns out config object into a driver string
+	if err != nil { log.Fatal("Error connecting to sql: ", err) }
+	defer db.Close()
+	
+	SelectElo, err = db.Prepare("SELECT rating FROM mgemod_stats WHERE steamid = ?")
+	if err != nil { log.Fatal(err) }
+	defer SelectElo.Close()
 
+	AddPlayersTest(118, 14)
+	SendQueueToClients(hub)
 	rout.Run()
 }
 
@@ -134,8 +177,13 @@ func loadTemplates(dir string) multitemplate.Renderer {
 	return r
 }
 
-func GetElo(steamid string) int {
-	return 1000
+func GetElo(steam64 string) (int, error) {
+	s64 := steamid.ParseString(steam64)[0]	//ParseString returns an array. I like this over SID64FromString because no error testing.
+	steam2 := steamid.SID64ToSID(s64) //7777777777777 -> Steam_0:1:1111111
+	var rating int
+	err := SelectElo.QueryRow(steam2).Scan(&rating)
+	//if err is row doesn't exist for this steam2, ignore and return 1600 (default elo in mgemod)
+	return rating, err
 }
 
 type PlayerAdded struct {
@@ -189,18 +237,33 @@ func WsServer(c *gin.Context) {
 	}
 }
 
-func QueueUpdate(joining bool, conn *connection) { //The individual act of joining/leaving the queue. Should be followed by QueueAck
+func QueueUpdate(joining bool, conn *connection) { //The individual act of joining/leaving the queue. Should be followed by SendQueueToClients
 	steamid := conn.user.id
 	if joining { //add to queue
-			GameQueue[steamid] = PlayerAdded{Connection: conn, Steamid: steamid, Elo: GetElo(steamid), WaitingSince: time.Now()}//steamid//lol
+			GameQueue[steamid] = PlayerAdded{Connection: conn, Steamid: steamid, Elo: conn.user.elo, WaitingSince: time.Now()}//steamid//lol
 	} else { //remove from queue
 			delete(GameQueue, steamid) //remove steamid from gamequeue
 	}
 
-	QueueAck(conn.h)
+	SendQueueToClients(conn.h)
 }
 
-func QueueAck(hub *Hub) {
+func AddPlayersTest(seed int64, maxplayers int) {
+	rand.Seed(seed)
+	i := rand.Intn(maxplayers+1) + 3
+	n := 0
+	for n <= i {
+		n = n + 1
+		GameQueue[fmt.Sprintf("%d", n)] = PlayerAdded{
+			Connection: nil, 
+			Steamid: fmt.Sprintf("%d", n), 
+			Elo: rand.Intn(2000) + 1000, 
+			WaitingSince: time.Now().Add(time.Second * -time.Duration(rand.Intn(120) + 1)),	//subtracts a random amount of seconds from the current time
+		}
+	}
+}
+
+func SendQueueToClients(hub *Hub) {
 	for c := range hub.connections {
 		_, ok := GameQueue[c.user.id] //check if key exists in map
 		ack := &AckQueue{Type:"AckQueue", Queue: GameQueue, IsInQueue: ok}	//send a personalized ack out to each client, including confirmation that they're still inqueue
