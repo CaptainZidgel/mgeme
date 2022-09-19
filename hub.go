@@ -14,15 +14,18 @@ type Hub struct {
 	
 	broadcast chan []byte //An asynchronous go channel for messages from the connections
 	
+	hubType string
+	
 	logMx sync.RWMutex
 	log [][]byte //idk what this means. an array of strings ([]byte = string, []type = array of type?) im rusty on my Go
 }
 
-func newHub() *Hub {
+func newHub(hubType string) *Hub {
 	h := &Hub {
 		connectionsMx: sync.RWMutex{},
 		broadcast: make(chan []byte),
 		connections: make(map[*connection]struct{}),
+		hubType: hubType,
 	}
 	
 	go func() {
@@ -49,7 +52,11 @@ func (h *Hub) addConnection(conn *connection) {
 	defer h.connectionsMx.Unlock()
 	h.connections[conn] = struct{}{}
 	log.Printf("Added connection to hub")
-	QueueUpdate(false, conn) //We've just initialized the websocket connection. We do not automatically add the user to the queue. In fact, clear them out of it if they're in there.
+	if (h.hubType == "user") {
+		QueueUpdate(false, conn) //We've just initialized the websocket connection. We do not automatically add the user to the queue. In fact, clear them out of it if they're in there.
+	} else if (h.hubType == "game") {
+		conn.sendJSON <- &HelloWorld{Hello: "World!"}
+	}
 }
 
 func (h *Hub) removeConnection(conn *connection) {

@@ -23,15 +23,19 @@ func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn) {
 		if err != nil {
 			fmt.Printf("Error reading json: %s\n", err.Error())
 			if websocket.IsCloseError(err, 1001) {
-				QueueUpdate(false, c)
+				if c.h.hubType == "user" {QueueUpdate(false, c)}
 				fmt.Printf("Disconnection (1001)\n")
 				break
+			} else if websocket.IsCloseError(err, 1006) {
+				if c.h.hubType != "game" {
+					fmt.Printf("Unexpected user disconnect (1006) didn't close connection properly")
+				}
 			}
 			continue
 		}
 		herr := HandleMessage(jmsg, c.user.id, c)
 		if herr != nil {
-			c.sendText <- []byte(herr.Error())
+			c.sendText <- []byte(herr.Error()) //This echos errors back to the sender. Need to update this as its nonfunctional atm.
 		}
 		//c.h.broadcast <- message
 	}

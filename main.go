@@ -19,6 +19,7 @@ import (
 	"github.com/leighmacdonald/steamid/v2/steamid"
 	"io/ioutil"
 	"encoding/json"
+	"net"
 )
 
 type User struct {
@@ -41,10 +42,11 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 		if id := session.Get("steamid"); id != nil {
 			user.id = id.(string)
 			elo, err := GetElo(user.id)
-			if err != nil {
-				panic(err)
+			if err != nil { //To do: Double check this error is just "sql: no rows in result set"
+				user.elo = 1600
+			} else {
+				user.elo = elo
 			}
-			user.elo = elo
 		}
 		if user.id != "" {
 			c.Set("User", user)
@@ -96,14 +98,20 @@ func main() {
 		}
 	})
 
-	hub := newHub()
-	rout.GET("/websock", func(c *gin.Context) {
-		c.Set("Hub", *hub) //all websocket connections should have the same hub (server)
+	userHub := newHub("user")
+	rout.GET("/websock", func(c *gin.Context) {	//The endpoint for user connections (ie users adding up to play, but not for servers connecting to transmit messages)
+		c.Set("Hub", *userHub) //all websocket connections should have the same hub (server)
+		WsServer(c)
+	})
+	
+	gameHub := newHub("game")
+	rout.GET("/tf2serverep", func(c *gin.Context) {
+		c.Set("Hub", *gameHub)
 		WsServer(c)
 	})
 
 	rout.GET("/queue", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "queue.html", gin.H{})
+		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": getOutboundIp(), "wsPort": 8080})
 	})
 	
 	content, err := ioutil.ReadFile("./DbCfg.json")
@@ -127,8 +135,20 @@ func main() {
 	defer SelectElo.Close()
 
 	AddPlayersTest(118, 14)
-	SendQueueToClients(hub)
-	rout.Run()
+	SendQueueToClients(userHub)
+	rout.Run(":8080") //run main router on 0.0.0.0:8080
+}
+
+//https://stackoverflow.com/questions/23558425/how-do-i-get-the-local-ip-address-in-go
+func getOutboundIp() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+	
+	localAddr := conn.LocalAddr().(*net.UDPAddr).IP.String()
+	return localAddr
 }
 
 func loginSteam(c *gin.Context) {
@@ -201,11 +221,13 @@ var GameQueue = make(PlayerEntries) //this is an instance of the type
 
 func WsServer(c *gin.Context) {
 	h, _ := c.Get("Hub")
-	hub := h.(Hub) //cast the context to Hub type
+	hub := h.(Hub) //cast the context to Hub type. This hub may either be a user hub (groups the connections of users to the webserver) or a gameserver hub (groups the connections of game servers to the webserver)
 
-	usr, lgdin := c.Get("User")
-	if lgdin {
-		//steamid := usr.(User).id	//cast the usr context to a User type, then get the id
+	usr, lgdin := c.Get("User") //lgdin (loggedin) represents if the key User exists in context
+	hubtype := hub.hubType
+	if lgdin || hubtype == "game" { //We don't bother upgrading the connection for an unlogged in user (but we will for game servers!)
+		fmt.Printf("Accepting websocket connection type: %s", hubtype)
+
 		w := c.Writer
 		r := c.Request
 		//"Upgrade" the HTTP connection to a WebSocket connection, and use default buffer sizes
@@ -219,12 +241,17 @@ func WsServer(c *gin.Context) {
 			log.Println(err)
 			return
 		}
+		
+		var user User
+		if lgdin {
+			user = usr.(User) //cast the context var to a User type
+		}
 
 		c := &connection{
 			sendText: make(chan []byte, 256), 
 			sendJSON: make(chan interface{}, 1024),
 			h: &hub, 
-			user: usr.(User),
+			user: user,
 		} //create our ws connection object
 		hub.addConnection(c) //Add our connection to the hub
 		defer hub.removeConnection(c) //Remove
@@ -234,6 +261,8 @@ func WsServer(c *gin.Context) {
 		go c.reader(&wg, conn)
 		wg.Wait()
 		conn.Close()
+	} else {
+		fmt.Printf("Rejecting websocket connection: %s, %s", lgdin, hubtype)
 	}
 }
 
