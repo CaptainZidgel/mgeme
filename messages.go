@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"encoding/json"
 	"errors"
+	"log"
 )
 
 type Message struct {
@@ -20,7 +21,7 @@ type QueueJoinLeave struct { //Comes from users: Join or leave the queue
 
 type ServerHelloWorld struct { //Comes from gameserver to initialize connections.
 	ApiKey string `json:"apiKey"`
-	ServerNum int `json:"serverNum"`
+	ServerNum string `json:"serverNum"`
 }
 
 
@@ -37,7 +38,7 @@ type HelloWorld struct {
 
 func HandleMessage(msg Message, steamid string, conn *connection) error { //get steamid from server (which gets it from browser session after auth), don't trust users to send it in json. pass the websocket connection so we can send stuff back if needed, or pass it to further functions
 	fmt.Println(msg.Type)
-	if msg.Type == "QueueUpdate" { // {type: "QueueUpdate", payload: {joining: true/false}}
+	if msg.Type == "QueueUpdate" { // {type: "QueueUpdate", payload: {joining: true/false}} Comes from users
 		var res QueueJoinLeave
 		err := json.Unmarshal(msg.Payload, &res) //write to that empty instance
 		if err != nil {
@@ -49,13 +50,18 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 			}
 		}
 		QueueUpdate(res.Joining, conn)	//Update the server's master queue
-	} else if msg.Type == "hworld" {
+	} else if msg.Type == "TestMatch" {
+		m := DummyMatch("*", "FakePlayer", conn.h)
+		if m == nil { log.Fatalln("nil match") }
+		SendMatchToServer(m, conn.h)
+	} else if msg.Type == "hworld" { //Comes from gameservers
 		var res ServerHelloWorld
 		err := json.Unmarshal(msg.Payload, &res)
 		if err != nil {
 			fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
 		}
 		fmt.Println("::", msg.Payload, res.ApiKey, res.ServerNum)
+		conn.id = fmt.Sprintf("%d", res.ServerNum)
 	} else if msg.Type == "i dont know actually let me think about that" {
 		//res := MessageType
 		//JSON.Unmarshall(msg.Payload, &res)

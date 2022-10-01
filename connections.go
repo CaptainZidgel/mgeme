@@ -9,7 +9,7 @@ import (
 )
 
 type connection struct {
-	user User
+	id string //steamid for users or a To Be Decided for gameservers
 	sendText chan []byte
 	sendJSON chan interface{}
 	h *Hub
@@ -33,7 +33,7 @@ func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn) {
 			}
 			continue
 		}
-		herr := HandleMessage(jmsg, c.user.id, c)
+		herr := HandleMessage(jmsg, c.id, c)
 		if herr != nil {
 			c.sendText <- []byte(herr.Error()) //This echos errors back to the sender. Need to update this as its nonfunctional atm.
 		}

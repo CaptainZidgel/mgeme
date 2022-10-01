@@ -7,6 +7,7 @@ import (
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-contrib/multitemplate"
 	"log"
+	"os"
 	"fmt"
 	"path/filepath"
 	"github.com/solovev/steam_go"
@@ -20,6 +21,7 @@ import (
 	"io/ioutil"
 	"encoding/json"
 	"net"
+	"strings"
 )
 
 type User struct {
@@ -41,12 +43,7 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 		session := sessions.Default(c)
 		if id := session.Get("steamid"); id != nil {
 			user.id = id.(string)
-			elo, err := GetElo(user.id)
-			if err != nil { //To do: Double check this error is just "sql: no rows in result set"
-				user.elo = 1600
-			} else {
-				user.elo = elo
-			}
+			user.elo = GetElo(user.id)
 		}
 		if user.id != "" {
 			c.Set("User", user)
@@ -109,9 +106,16 @@ func main() {
 		c.Set("Hub", *gameHub)
 		WsServer(c)
 	})
+	
+	var wsHost string
+	if len(os.Args) > 1 {
+		wsHost = os.Args[1]
+	} else {
+		wsHost = getOutboundIp()
+	}
 
 	rout.GET("/queue", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": getOutboundIp(), "wsPort": 8080})
+		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": wsHost, "wsPort": 8080})
 	})
 	
 	content, err := ioutil.ReadFile("./DbCfg.json")
@@ -134,7 +138,7 @@ func main() {
 	if err != nil { log.Fatal(err) }
 	defer SelectElo.Close()
 
-	AddPlayersTest(118, 14)
+	AddPlayersTest(118, 14, userHub)
 	SendQueueToClients(userHub)
 	rout.Run(":8080") //run main router on 0.0.0.0:8080
 }
@@ -197,13 +201,19 @@ func loadTemplates(dir string) multitemplate.Renderer {
 	return r
 }
 
-func GetElo(steam64 string) (int, error) {
+func GetElo(steam64 string) (int) {
+	if strings.Contains(steam64, "FakePlayer") {
+		return 1600
+	}
 	s64 := steamid.ParseString(steam64)[0]	//ParseString returns an array. I like this over SID64FromString because no error testing.
 	steam2 := steamid.SID64ToSID(s64) //7777777777777 -> Steam_0:1:1111111
 	var rating int
 	err := SelectElo.QueryRow(steam2).Scan(&rating)
 	//if err is row doesn't exist for this steam2, ignore and return 1600 (default elo in mgemod)
-	return rating, err
+	if err != nil { //To do: Double check this error is just "sql: no rows in result set"
+		rating = 1600
+	}
+	return rating
 }
 
 type PlayerAdded struct {
@@ -216,8 +226,8 @@ type PlayerAdded struct {
 	//example of further properties: maps desired, server location, classes desired
 }
 
-type PlayerEntries map[string]PlayerAdded //this is a type
-var GameQueue = make(PlayerEntries) //this is an instance of the type
+type PlayerEntries map[string]PlayerAdded //this is a maptype of PlayerAdded structs. It maps steamids to player data.
+var GameQueue = make(PlayerEntries) //this is an instance of the maptype of PlayerAdded structs
 
 func WsServer(c *gin.Context) {
 	h, _ := c.Get("Hub")
@@ -251,7 +261,7 @@ func WsServer(c *gin.Context) {
 			sendText: make(chan []byte, 256), 
 			sendJSON: make(chan interface{}, 1024),
 			h: &hub, 
-			user: user,
+			id: user.id,
 		} //create our ws connection object
 		hub.addConnection(c) //Add our connection to the hub
 		defer hub.removeConnection(c) //Remove
@@ -267,9 +277,9 @@ func WsServer(c *gin.Context) {
 }
 
 func QueueUpdate(joining bool, conn *connection) { //The individual act of joining/leaving the queue. Should be followed by SendQueueToClients
-	steamid := conn.user.id
+	steamid := conn.id
 	if joining { //add to queue
-			GameQueue[steamid] = PlayerAdded{Connection: conn, Steamid: steamid, Elo: conn.user.elo, WaitingSince: time.Now()}//steamid//lol
+			GameQueue[steamid] = PlayerAdded{Connection: conn, Steamid: steamid, Elo: GetElo(conn.id), WaitingSince: time.Now()}//steamid//lol
 	} else { //remove from queue
 			delete(GameQueue, steamid) //remove steamid from gamequeue
 	}
@@ -277,14 +287,12 @@ func QueueUpdate(joining bool, conn *connection) { //The individual act of joini
 	SendQueueToClients(conn.h)
 }
 
-func AddPlayersTest(seed int64, maxplayers int) {
+func AddPlayersTest(seed int64, maxplayers int, hub *Hub) {
 	rand.Seed(seed)
 	i := rand.Intn(maxplayers+1) + 3
-	n := 0
-	for n <= i {
-		n = n + 1
+	for n := 0; n < i; n++ {
 		GameQueue[fmt.Sprintf("%d", n)] = PlayerAdded{
-			Connection: nil, 
+			Connection: &connection{id: "FakePlayer", sendText: nil, sendJSON: nil, h: hub}, 
 			Steamid: fmt.Sprintf("%d", n), 
 			Elo: rand.Intn(2000) + 1000, 
 			WaitingSince: time.Now().Add(time.Second * -time.Duration(rand.Intn(120) + 1)),	//subtracts a random amount of seconds from the current time
@@ -294,9 +302,65 @@ func AddPlayersTest(seed int64, maxplayers int) {
 
 func SendQueueToClients(hub *Hub) {
 	for c := range hub.connections {
-		_, ok := GameQueue[c.user.id] //check if key exists in map
-		ack := &AckQueue{Type:"AckQueue", Queue: GameQueue, IsInQueue: ok}	//send a personalized ack out to each client, including confirmation that they're still inqueue
+		_, ok := GameQueue[c.id] //check if key exists in map
+		ack := AckQueue{Type:"AckQueue", Queue: GameQueue, IsInQueue: ok}	//send a personalized ack out to each client, including confirmation that they're still inqueue
 		c.sendJSON <- ack
 	}
 }
 
+type Match struct {
+	Server string `json:"serverId"`
+	Arena string `json:"arenaId"`
+	P1 string `json:"p1Id"` //players1 and 2 ids
+	P2 string `json:"p2Id"`
+	Configuration map[string]string `json:"matchCfg"` //reserved: configuration may be something like "scout vs scout" or "demo vs demo" perhaps modeled as "cfg": "svs" or p1class : p2class
+}
+
+func SendMatchToServer(match *Match, hub *Hub) {
+	serverid := match.Server
+	c := hub.findConnection(serverid)
+	if c == nil {
+		log.Fatalf("No server to send match to")
+	}
+	c.sendJSON <- match
+}
+
+func findRealPlayerInQueue(hub *Hub) PlayerAdded { //Finds a real player in the queue (as opposed to fake players I added during testing
+	for _, player := range GameQueue {
+		if !strings.Contains(player.Connection.id, "FakePlayer") {
+			return player
+		}
+	}
+	return PlayerAdded{}
+}
+
+func DummyMatch(player1, player2 string, hub *Hub) *Match { //change string to SteamID2 type?
+	if player1 == "*" {
+		player1 = findRealPlayerInQueue(hub).Steamid
+	}
+	if player2 == "*" {
+		player2 = findRealPlayerInQueue(hub).Steamid
+	}
+	_, ok := GameQueue[player1]
+	if !ok { log.Fatal("Bad GameQueue key ", player1) }
+	delete(GameQueue, player1) //delete(map, key)
+	delete(GameQueue, player2)
+	SendQueueToClients(hub)
+	log.Println("Matching together { %s, %s }", player1, player2)
+	server := "1" //TODO: SelectServer() function if I scale out to multiple servers
+	arena := "0" // Random. TODO: Selection
+	return &Match{Server: server, Arena: arena, P1: player1, P2: player2, Configuration: make(map[string]string)}
+}
+
+func DummyMatchAll(hub *Hub) { //Just put 2 players together with no rhyme or reason.
+	keys := make([]string, 0)
+	for k, _ := range GameQueue {
+		keys = append(keys, k)
+	}
+	if len(keys) % 2 != 0 { //We only match an even amount of players
+		keys = keys[0:len(keys)-1]
+	}
+	for i := 1; i < len(keys) - 1; i += 2{
+		DummyMatch(keys[i], keys[i+1], hub)
+	}
+}

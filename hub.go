@@ -10,11 +10,11 @@ import (
 
 type Hub struct {
 	connectionsMx sync.RWMutex //so my understanding of a mutex is that it simply protects resources from being used by two different threads. If one thread tries to access a locked mutex, it is automatically blocked until the thread holding the mutex unlocks it. Sounds pretty cool and not as complicated as the name makes it seem.
-	connections map[*connection]struct{} //registered connections?
+	connections map[*connection]struct{} //registered connections. the guide does not say why they chose to store the conns as keys to empty values but i assume it's because arrays in Go suck
 	
 	broadcast chan []byte //An asynchronous go channel for messages from the connections
 	
-	hubType string
+	hubType string //"game" or "user"
 	
 	logMx sync.RWMutex
 	log [][]byte //idk what this means. an array of strings ([]byte = string, []type = array of type?) im rusty on my Go
@@ -45,6 +45,15 @@ func newHub(hubType string) *Hub {
 		}
 	}()
 	return h
+}
+
+func (h *Hub) findConnection(id string) *connection {
+	for conn := range h.connections {
+		if conn.id == id {
+			return conn
+		}
+	}
+	return nil
 }
 
 func (h *Hub) addConnection(conn *connection) {

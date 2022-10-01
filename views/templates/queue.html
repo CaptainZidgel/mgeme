@@ -3,7 +3,11 @@
 <script src="https://unpkg.com/vue@3"></script>
 <h1>Hi</h1>
 <div id="app">
-	{{"{{farts}}"}}<button v-on:click="JoinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
+	{{"{{arrow}}"}}<button v-on:click="JoinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
+	<br>
+	<br>
+	<button v-on:click="NewMatch()">Test match</button>
+	<br>
 	<br>
 	<ul>
 		<li v-for="value of serverQueue">
@@ -12,29 +16,10 @@
 	</ul>
 </div>
 <script>
-/*let ws = new WebSocket("ws://localhost:8080/websock") <!--Note: use wss when using TLS -->
-
-ws.onopen = function(event) {
-	console.log("Connection established");
-	ws.send("Heyyy ;)");
-};
-
-ws.onmessage = function(event) {
-	console.log(`Received: ${event.data}`);
-};
-
-ws.onclose = function(event) {
-
-};
-
-ws.onerror = function(event) {
-	console.log(`ws err: ${event.message}`);
-}*/
-
 const app = Vue.createApp({
 	data() {
 		return {
-			farts: "--->",
+			arrow: "--->",
 			socket: null, //shoutout https://github.com/NerdCademyDev/golang/blob/main/09_web_sockets/client/src/App.vue
 			inQueue: false, //at some point I should implement pinging the server in mounted() to confirm
 			serverQueue: []
@@ -42,7 +27,7 @@ const app = Vue.createApp({
 	},
 	mounted() { //lifecycle hook 
 		console.log("Mounting", this)
-		this.socket = new WebSocket("ws://localhost:8080/websock")
+		this.socket = new WebSocket("ws://{{.wsHost}}:{{.wsPort}}/websock")
 		this.socket.onopen = () => console.log("ws Connection established")
 		this.socket.onclose = function(event) {
 			if (event.wasClean) {
@@ -70,6 +55,9 @@ const app = Vue.createApp({
 		},
 		inQueueMessage() {
 			return this.inQueue ? "Unadd" : "Add Up"
+		},
+		NewMatch() {
+			this.socket.send(JSON.stringify({type: "TestMatch", payload: {}}))
 		}
 	}
 })
