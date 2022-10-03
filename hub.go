@@ -48,6 +48,7 @@ func newHub(hubType string) *Hub {
 }
 
 func (h *Hub) findConnection(id string) *connection {
+	log.Println("Looking for conn", id, "in hub", h.hubType)
 	for conn := range h.connections {
 		if conn.id == id {
 			return conn

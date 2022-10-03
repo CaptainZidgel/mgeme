@@ -55,6 +55,7 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 } //this is fairly superfluous at this point but if i build out the User type I will want to add stuff here probably
 
 var SelectElo *sql.Stmt
+var gameHub *Hub
 
 func main() {
 	rout := gin.Default()
@@ -101,7 +102,7 @@ func main() {
 		WsServer(c)
 	})
 	
-	gameHub := newHub("game")
+	gameHub = newHub("game")
 	rout.GET("/tf2serverep", func(c *gin.Context) {
 		c.Set("Hub", *gameHub)
 		WsServer(c)
@@ -309,20 +310,21 @@ func SendQueueToClients(hub *Hub) {
 }
 
 type Match struct {
+	Type string `json:"type"` //This sucks. I have to have type here so I don't dupe my code into the messages section but I don't like having my object here be the same as my json message object.
 	Server string `json:"serverId"`
-	Arena string `json:"arenaId"`
+	Arena int `json:"arenaId"`
 	P1 string `json:"p1Id"` //players1 and 2 ids
 	P2 string `json:"p2Id"`
 	Configuration map[string]string `json:"matchCfg"` //reserved: configuration may be something like "scout vs scout" or "demo vs demo" perhaps modeled as "cfg": "svs" or p1class : p2class
 }
 
-func SendMatchToServer(match *Match, hub *Hub) {
+func SendMatchToServer(match *Match) {
 	serverid := match.Server
-	c := hub.findConnection(serverid)
+	c := gameHub.findConnection(serverid)
 	if c == nil {
 		log.Fatalf("No server to send match to")
 	}
-	c.sendJSON <- match
+	c.sendJSON <- &match
 }
 
 func findRealPlayerInQueue(hub *Hub) PlayerAdded { //Finds a real player in the queue (as opposed to fake players I added during testing
@@ -346,10 +348,10 @@ func DummyMatch(player1, player2 string, hub *Hub) *Match { //change string to S
 	delete(GameQueue, player1) //delete(map, key)
 	delete(GameQueue, player2)
 	SendQueueToClients(hub)
-	log.Println("Matching together { %s, %s }", player1, player2)
-	server := "1" //TODO: SelectServer() function if I scale out to multiple servers
-	arena := "0" // Random. TODO: Selection
-	return &Match{Server: server, Arena: arena, P1: player1, P2: player2, Configuration: make(map[string]string)}
+	log.Println("Matching together", player1, player2)
+	server := "1" //TODO: SelectServer() function if I scale out to multiple servers. I'm keeping server as a string for now in case I want to identify servers in another way.
+	arena := 0 // Random. TODO: Selection
+	return &Match{Type: "matchInit", Server: server, Arena: arena, P1: player1, P2: player2, Configuration: make(map[string]string)}
 }
 
 func DummyMatchAll(hub *Hub) { //Just put 2 players together with no rhyme or reason.

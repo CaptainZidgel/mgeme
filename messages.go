@@ -7,7 +7,7 @@ import (
 	"log"
 )
 
-type Message struct {
+type Message struct { //This is a struct-ambiguous way to receive json messages. The type is used to cast the payload into the right struct.
 	Type string `json:"type"`
 	Payload json.RawMessage `json:"payload"`
 }
@@ -53,7 +53,7 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 	} else if msg.Type == "TestMatch" {
 		m := DummyMatch("*", "FakePlayer", conn.h)
 		if m == nil { log.Fatalln("nil match") }
-		SendMatchToServer(m, conn.h)
+		SendMatchToServer(m)
 	} else if msg.Type == "hworld" { //Comes from gameservers
 		var res ServerHelloWorld
 		err := json.Unmarshal(msg.Payload, &res)
@@ -61,7 +61,7 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 			fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
 		}
 		fmt.Println("::", msg.Payload, res.ApiKey, res.ServerNum)
-		conn.id = fmt.Sprintf("%d", res.ServerNum)
+		conn.id = res.ServerNum
 	} else if msg.Type == "i dont know actually let me think about that" {
 		//res := MessageType
 		//JSON.Unmarshall(msg.Payload, &res)
