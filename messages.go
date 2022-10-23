@@ -24,6 +24,12 @@ type ServerHelloWorld struct { //Comes from gameserver to initialize connections
 	ServerNum string `json:"serverNum"`
 }
 
+type MatchResults struct {
+	Winner string `json:"winner"`
+	Loser string `json:"loser"`
+	FinishMode string `json:"finishMode"`
+}
+
 
 //MESSAGES WE WILL SEND
 type AckQueue struct {
@@ -51,7 +57,7 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 		}
 		QueueUpdate(res.Joining, conn)	//Update the server's master queue
 	} else if msg.Type == "TestMatch" {
-		m := DummyMatch("*", "FakePlayer", conn.h)
+		m := DummyMatch(conn.h)
 		if m == nil { log.Fatalln("nil match") }
 		SendMatchToServer(m)
 	} else if msg.Type == "hworld" { //Comes from gameservers
@@ -60,8 +66,18 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 		if err != nil {
 			fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
 		}
-		fmt.Println("::", msg.Payload, res.ApiKey, res.ServerNum)
+		fmt.Println("Game Server %s connected", res.ServerNum)
 		conn.id = res.ServerNum
+	} else if msg.Type == "MatchResults" {
+		var res MatchResults
+		err := json.Unmarshal(msg.Payload, &res)
+		if err != nil {
+			fmt.Println("Error unmarshaling MatchResults", err.Error(), "|", string(msg.Payload))
+		}
+		//do something
+		winner := res.Winner
+		loser := res.Loser
+		fmt.Printf("Received MatchResults from Server %s : Winner %s , Loser %s ^ Finish Mode %s/n", conn.id, winner, loser, res.FinishMode)
 	} else if msg.Type == "i dont know actually let me think about that" {
 		//res := MessageType
 		//JSON.Unmarshall(msg.Payload, &res)

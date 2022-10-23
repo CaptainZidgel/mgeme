@@ -3,12 +3,20 @@
 <script src="https://unpkg.com/vue@3"></script>
 <h1>Hi</h1>
 <div id="app">
+	<div v-if="!loggedIn">
+		<h3>You're not logged in!</h3>
+		<a href="/login?redirect=queue"><img src="https://steamcdn-a.akamaihd.net/steamcommunity/public/images/steamworks_docs/english/sits_small.png"/></a>
+	</div>
+	<div v-else>
+	{{/*A quick Go comment for templating: Since Go and Vue both use curly braces, you're going to have to place your vue content in a string inside the Go braces*/}}
 	{{"{{arrow}}"}}<button v-on:click="JoinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
 	<br>
 	<br>
 	<button v-on:click="NewMatch()">Test match</button>
 	<br>
 	<br>
+	</div>
+	<h2>Queue</h2>
 	<ul>
 		<li v-for="value of serverQueue">
 			{{"{{value}}"}}
@@ -22,7 +30,8 @@ const app = Vue.createApp({
 			arrow: "--->",
 			socket: null, //shoutout https://github.com/NerdCademyDev/golang/blob/main/09_web_sockets/client/src/App.vue
 			inQueue: false, //at some point I should implement pinging the server in mounted() to confirm
-			serverQueue: []
+			serverQueue: [],
+			loggedIn: {{.loggedIn}}, //Receive loggedIn variable from Go server
 		}
 	},
 	mounted() { //lifecycle hook 

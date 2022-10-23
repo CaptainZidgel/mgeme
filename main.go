@@ -116,7 +116,8 @@ func main() {
 	}
 
 	rout.GET("/queue", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": wsHost, "wsPort": 8080})
+		_, loggedin := c.Get("User")
+		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": wsHost, "wsPort": 8080, "loggedIn": loggedin})
 	})
 	
 	content, err := ioutil.ReadFile("./DbCfg.json")
@@ -176,6 +177,12 @@ func loginSteam(c *gin.Context) {
 			session := sessions.Default(c)
 			session.Set("steamid", steamId)
 			session.Save()
+
+			//parse original request (r) to see if there was a specific redirect param
+			redir := r.FormValue("redirect")
+			if redir == "queue" {
+				http.Redirect(w, r, "/queue", 301)
+			}
 	}
 }
 
@@ -327,7 +334,32 @@ func SendMatchToServer(match *Match) {
 	c.sendJSON <- &match
 }
 
-func findRealPlayerInQueue(hub *Hub) PlayerAdded { //Finds a real player in the queue (as opposed to fake players I added during testing
+func fillPlayerSlice(num int, fallback bool) []PlayerAdded {
+	fill := make([]PlayerAdded, num) //Create empty slice of PlayerAdded elements, length num. instead of dynamically resizing with fill = append(fill, x) we're just going to assign x to fill[i]
+	i := 0
+	for key := range GameQueue {
+		if GameQueue[key].Connection.id == "FakePlayer" {continue} else {log.Println("Adding to fill: ", key)} //only use real players
+		fill[i] = GameQueue[key]
+		i = i + 1
+		if i == num {
+			return fill
+		}
+	}
+	if fallback { //still extra space? allowed to use fake players? then do so
+		diff := num - i
+		for diff > 0 {
+			log.Println("Adding a fake player to fill. diff before subtraction = ", diff)
+			fill[i] = PlayerAdded{Steamid: "FakePlayer"}
+			diff = diff - 1
+			i = i + 1 //continue iterating so we can fill our slice properly
+		}
+	} else {
+		panic("Couldn't fill enough players")
+	}
+	return fill
+}
+
+func findRealPlayerInQueue(hub *Hub) PlayerAdded { //Finds a real player in the queue, if one exists. This is NOT error safe if one doesn't exist. Doesn't know if it's already returned you that player in another call. Use fillPlayerSlice
 	for _, player := range GameQueue {
 		if !strings.Contains(player.Connection.id, "FakePlayer") {
 			return player
@@ -336,24 +368,25 @@ func findRealPlayerInQueue(hub *Hub) PlayerAdded { //Finds a real player in the 
 	return PlayerAdded{}
 }
 
-func DummyMatch(player1, player2 string, hub *Hub) *Match { //change string to SteamID2 type?
-	if player1 == "*" {
-		player1 = findRealPlayerInQueue(hub).Steamid
-	}
-	if player2 == "*" {
-		player2 = findRealPlayerInQueue(hub).Steamid
-	}
-	_, ok := GameQueue[player1]
-	if !ok { log.Fatal("Bad GameQueue key ", player1) }
+func DummyMatch(hub *Hub) *Match { //change string to SteamID2 type?
+	players := fillPlayerSlice(2, true)
+	log.Println("Received fill slice: ", players)	
+	player1 := players[0].Steamid
+	player2 := players[1].Steamid
+	
+	//remove players from queue, update queue for all players
 	delete(GameQueue, player1) //delete(map, key)
 	delete(GameQueue, player2)
 	SendQueueToClients(hub)
+
+	//send match to server
 	log.Println("Matching together", player1, player2)
 	server := "1" //TODO: SelectServer() function if I scale out to multiple servers. I'm keeping server as a string for now in case I want to identify servers in another way.
-	arena := 0 // Random. TODO: Selection
+	arena := 1 // Random. TODO: Selection
 	return &Match{Type: "matchInit", Server: server, Arena: arena, P1: player1, P2: player2, Configuration: make(map[string]string)}
 }
 
+/*
 func DummyMatchAll(hub *Hub) { //Just put 2 players together with no rhyme or reason.
 	keys := make([]string, 0)
 	for k, _ := range GameQueue {
@@ -366,3 +399,4 @@ func DummyMatchAll(hub *Hub) { //Just put 2 players together with no rhyme or re
 		DummyMatch(keys[i], keys[i+1], hub)
 	}
 }
+*/
