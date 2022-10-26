@@ -103,13 +103,13 @@ func main() {
 
 	userHub := newHub("user")
 	rout.GET("/websock", func(c *gin.Context) {	//The endpoint for user connections (ie users adding up to play, but not for servers connecting to transmit messages)
-		c.Set("Hub", *userHub) //all websocket connections should have the same hub (server)
+		c.Set("Hub", userHub) //all websocket connections should have the same hub (server)
 		WsServer(c)
 	})
 	
 	gameHub = newHub("game")
 	rout.GET("/tf2serverep", func(c *gin.Context) {
-		c.Set("Hub", *gameHub)
+		c.Set("Hub", gameHub)
 		WsServer(c)
 	})
 	
@@ -245,7 +245,7 @@ var Prematches []*prematch //Matches that are waiting for players to ready up (w
 
 func WsServer(c *gin.Context) {
 	h, _ := c.Get("Hub")
-	hub := h.(Hub) //cast the context to Hub type. This hub may either be a user hub (groups the connections of users to the webserver) or a gameserver hub (groups the connections of game servers to the webserver)
+	hub := h.(*Hub) //cast the context to Hub type. This hub may either be a user hub (groups the connections of users to the webserver) or a gameserver hub (groups the connections of game servers to the webserver)
 
 	usr, lgdin := c.Get("User") //lgdin (loggedin) represents if the key User exists in context
 	hubtype := hub.hubType
@@ -275,7 +275,7 @@ func WsServer(c *gin.Context) {
 			sendText: make(chan []byte, 256), 
 			sendJSON: make(chan interface{}, 1024),
 			playerReady: make(chan bool, 8),
-			h: &hub, 
+			h: hub, 
 			id: user.id,
 		} //create our ws connection object
 		hub.addConnection(c) //Add our connection to the hub

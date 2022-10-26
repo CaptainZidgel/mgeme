@@ -15,9 +15,6 @@ type Hub struct {
 	broadcast chan []byte //An asynchronous go channel for messages from the connections
 	
 	hubType string //"game" or "user"
-	
-	logMx sync.RWMutex
-	log [][]byte //idk what this means. an array of strings ([]byte = string, []type = array of type?) im rusty on my Go
 }
 
 func newHub(hubType string) *Hub {

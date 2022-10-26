@@ -96,7 +96,7 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 		if err != nil {
 			fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
 		}
-		fmt.Println("Game Server %s connected", res.ServerNum)
+		fmt.Printf("Game Server %s connected\n", res.ServerNum)
 		conn.id = res.ServerNum
 	} else if msg.Type == "MatchResults" {
 		var res MatchResults
@@ -114,7 +114,7 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 		//res := MessageType
 		//JSON.Unmarshall(msg.Payload, &res)
 	} else {
-		return errors.New(fmt.Sprintf("Unknown message type: %s", msg.Type))
+		return fmt.Errorf("Unknown message type: %s", msg.Type)
 	}
 	return nil
 }
