@@ -3,18 +3,28 @@
 <script src="https://unpkg.com/vue@3"></script>
 <h1>Hi</h1>
 <div id="app">
+	<div id="rupBox" v-if="rupStatus.showPrompt">
+		<h3>{{"{{rupPromptMessage()}}"}}</h3>
+		<button v-on:click="readyUp(true)" v-if="!rupStatus.selfRupped">Ready</button>
+		<p>{{"{{rupTimeLeft}}"}} Seconds Remaining</p>
+	</div>
 	<div v-if="!loggedIn">
 		<h3>You're not logged in!</h3>
 		<a href="/login?redirect=queue"><img src="https://steamcdn-a.akamaihd.net/steamcommunity/public/images/steamworks_docs/english/sits_small.png"/></a>
 	</div>
 	<div v-else>
-	{{/*A quick Go comment for templating: Since Go and Vue both use curly braces, you're going to have to place your vue content in a string inside the Go braces*/}}
-	{{"{{arrow}}"}}<button v-on:click="JoinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
-	<br>
-	<br>
-	<button v-on:click="NewMatch()">Test match</button>
-	<br>
-	<br>
+		<div v-if="socket && socket.readyState === socket.OPEN">
+			{{/*A quick Go comment for templating: Since Go and Vue both use curly braces, you're going to have to place your vue content in a string inside the Go braces*/}}
+			{{"{{arrow}}"}}<button v-on:click="joinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
+			<br>
+			<br>
+			<button v-on:click="newMatch()">Test match</button>
+			<br>
+			<br>
+		</div>
+		<div v-else>
+			<h1>Waiting to connect to server...</h1>
+		</div>
 	</div>
 	<h2>Queue</h2>
 	<ul>
@@ -32,6 +42,13 @@ const app = Vue.createApp({
 			inQueue: false, //at some point I should implement pinging the server in mounted() to confirm
 			serverQueue: [],
 			loggedIn: {{.loggedIn}}, //Receive loggedIn variable from Go server
+			rupStatus: {
+				showPrompt: false,		//show the Ready Up alert to player. if self isn't rupped, show "hi you should ready up"
+				selfRupped: false,	//if self is rupped and partner isn't, show "waiting for partner" (if self is rupped and partner is, the alert would go away anyway)
+				expireAt: 0,
+			},
+			rupTimer: null,
+			rupTimeLeft: 0,
 		}
 	},
 	mounted() { //lifecycle hook 
@@ -54,24 +71,72 @@ const app = Vue.createApp({
 				let ids = Object.keys(data.queue) //this line should become deprecated before production, i.e. let ids = data.queue
 				this.inQueue = data.isInQueue
 				this.serverQueue = ids
+			} else if (data.type == "RupSignal") {
+				let show = data.showPrompt
+				this.rupStatus.showPrompt = show
+				if (show) {
+					this.rupStatus.selfRupped = false
+					this.rupStatus.expireAt = data.expireAt
+					this.updateRupTimeLeft()
+					this.rupTimer = setInterval(() => {
+						this.updateRupTimeLeft()
+					}, 1000)
+				}
 			}
 		}
 	},
-	methods: {
-		JoinLeaveQueue(joining) {
-			console.log("Sending QUpdate", joining)
-			this.socket.send(JSON.stringify({type: "QueueUpdate", payload: {joining: joining}}))
-		},
+	methods: { //functions we can call
 		inQueueMessage() {
 			return this.inQueue ? "Unadd" : "Add Up"
 		},
-		NewMatch() {
+		rupPromptMessage() {
+			return this.rupStatus.selfRupped ? "Waiting on Partner" : "Are you ready to play?"
+		},
+		updateRupTimeLeft() {
+			let now = Math.floor(Date.now() / 1000)
+			let expire = this.rupStatus.expireAt
+			console.log("t:", now, expire)
+			if (expire < now) {
+				console.log("t: clearing")
+				this.rupStatus.showPrompt = false
+				clearInterval(this.rupTimer)
+			} else {
+				this.rupTimeLeft = expire - now
+			}
+		},
+		joinLeaveQueue(joining) {
+			console.log("Sending QUpdate", joining)
+			this.socket.send(JSON.stringify({type: "QueueUpdate", payload: {joining: joining}}))
+		},
+		newMatch() {
 			this.socket.send(JSON.stringify({type: "TestMatch", payload: {}}))
-		}
+		},
+		readyUp(r) {
+			this.rupStatus.selfRupped = r
+			this.socket.send(JSON.stringify({type: "Ready"}))
+		},
+	},
+	beforeDestroy() {
+		clearInterval(this.rupTimer)
 	}
 })
 
 app.mount("#app")
 
 </script>
+<style>
+	#rupBox {
+		background-color: gray;
+		width: 200px;
+		height: 200px;
+		display: block;
+		position: absolute;
+	}
+
+	#rupBox button {
+		background-color: green;
+		width: 90%;
+		align-self: center;
+	}
+</style>
 {{end}}

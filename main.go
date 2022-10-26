@@ -22,7 +22,10 @@ import (
 	"encoding/json"
 	"net"
 	"strings"
+	"errors"
 )
+
+var rupTime int
 
 type User struct {
 	id string
@@ -47,9 +50,9 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 		}
 		if user.id != "" {
 			c.Set("User", user)
-			log.Print("Authing user")
+			log.Println("Authing user")
 		} else {
-			log.Print("Not authing")
+			log.Println("Not authing")
 		}
 	}
 } //this is fairly superfluous at this point but if i build out the User type I will want to add stuff here probably
@@ -58,6 +61,8 @@ var SelectElo *sql.Stmt
 var gameHub *Hub
 
 func main() {
+	rupTime = 5
+
 	rout := gin.Default()
 	rout.HTMLRender = loadTemplates("./views")
 
@@ -164,10 +169,10 @@ func loginSteam(c *gin.Context) {
 	switch opId.Mode() {
 		case "": //openid has not done anything yet, so redirect to steam login and begin the process
 			http.Redirect(w, r, opId.AuthUrl(), 301)
-			log.Print("OpenID 301 Redirecting")
+			log.Println("OpenID 301 Redirecting")
 		case "cancel": //Cancel authentication, treat user as unauthenticated
 			w.Write([]byte("authorization cancelled"))
-			log.Print("OpenID auth cancelled")
+			log.Println("OpenID auth cancelled")
 		default:
 			steamId, err := opId.ValidateAndGetId() //redirects your user to steam to authenticate, returns their id or an error
 			if err != nil {
@@ -236,6 +241,7 @@ type PlayerAdded struct {
 
 type PlayerEntries map[string]PlayerAdded //this is a maptype of PlayerAdded structs. It maps steamids to player data.
 var GameQueue = make(PlayerEntries) //this is an instance of the maptype of PlayerAdded structs
+var Prematches []*prematch //Matches that are waiting for players to ready up (we need to keep these in memory so we can get player info back later)
 
 func WsServer(c *gin.Context) {
 	h, _ := c.Get("Hub")
@@ -244,7 +250,7 @@ func WsServer(c *gin.Context) {
 	usr, lgdin := c.Get("User") //lgdin (loggedin) represents if the key User exists in context
 	hubtype := hub.hubType
 	if lgdin || hubtype == "game" { //We don't bother upgrading the connection for an unlogged in user (but we will for game servers!)
-		fmt.Printf("Accepting websocket connection type: %s", hubtype)
+		fmt.Printf("Accepting websocket connection type: %s\n", hubtype)
 
 		w := c.Writer
 		r := c.Request
@@ -268,6 +274,7 @@ func WsServer(c *gin.Context) {
 		c := &connection{
 			sendText: make(chan []byte, 256), 
 			sendJSON: make(chan interface{}, 1024),
+			playerReady: make(chan bool, 8),
 			h: &hub, 
 			id: user.id,
 		} //create our ws connection object
@@ -280,7 +287,7 @@ func WsServer(c *gin.Context) {
 		wg.Wait()
 		conn.Close()
 	} else {
-		fmt.Printf("Rejecting websocket connection: %s, %s", lgdin, hubtype)
+		fmt.Printf("Rejecting websocket connection: %s, %s\n", lgdin, hubtype)
 	}
 }
 
@@ -311,30 +318,42 @@ func AddPlayersTest(seed int64, maxplayers int, hub *Hub) {
 func SendQueueToClients(hub *Hub) {
 	for c := range hub.connections {
 		_, ok := GameQueue[c.id] //check if key exists in map
-		ack := AckQueue{Type:"AckQueue", Queue: GameQueue, IsInQueue: ok}	//send a personalized ack out to each client, including confirmation that they're still inqueue
-		c.sendJSON <- ack
+		c.sendJSON <- NewAckQueueMsg(GameQueue, ok) //send a personalized ack out to each client, including confirmation that they're still inqueue
 	}
 }
 
+//A sample match object made by the Go server, including full-fat user PlayerAdded objects that can be used to repopulate the queue if the match is cancelled before it begins.
+type prematch struct {
+	//These elements are copied directly into Match
+	Server string
+	Arena int
+	Configuration map[string]string
+	//This is unpacked into just the IDs, the only relevant part to the game server.
+	Players []PlayerAdded
+	timer *time.Timer //Used for Ready Up timers.
+	hub *Hub //I still need to find a good way to get hub to all funcs, look I'll fix it later OK i'm working on the fun stuff right now (<- he is lying to you)
+}
+
+//Finalized object to send to game servers (includes type param for JSON)
 type Match struct {
 	Type string `json:"type"` //This sucks. I have to have type here so I don't dupe my code into the messages section but I don't like having my object here be the same as my json message object.
 	Server string `json:"serverId"`
 	Arena int `json:"arenaId"`
-	P1 string `json:"p1Id"` //players1 and 2 ids
-	P2 string `json:"p2Id"`
+	P1id string `json:"p1Id"` //players1 and 2 ids
+	P2id string `json:"p2Id"`
 	Configuration map[string]string `json:"matchCfg"` //reserved: configuration may be something like "scout vs scout" or "demo vs demo" perhaps modeled as "cfg": "svs" or p1class : p2class
 }
 
-func SendMatchToServer(match *Match) {
+func SendMatchToServer(match Match) {
 	serverid := match.Server
 	c := gameHub.findConnection(serverid)
 	if c == nil {
 		log.Fatalf("No server to send match to")
 	}
-	c.sendJSON <- &match
+	c.sendJSON <- match
 }
 
-func fillPlayerSlice(num int, fallback bool) []PlayerAdded {
+func fillPlayerSlice(num int, fallback bool) ([]PlayerAdded, error) {
 	fill := make([]PlayerAdded, num) //Create empty slice of PlayerAdded elements, length num. instead of dynamically resizing with fill = append(fill, x) we're just going to assign x to fill[i]
 	i := 0
 	for key := range GameQueue {
@@ -342,7 +361,7 @@ func fillPlayerSlice(num int, fallback bool) []PlayerAdded {
 		fill[i] = GameQueue[key]
 		i = i + 1
 		if i == num {
-			return fill
+			return fill, nil
 		}
 	}
 	if fallback { //still extra space? allowed to use fake players? then do so
@@ -354,9 +373,9 @@ func fillPlayerSlice(num int, fallback bool) []PlayerAdded {
 			i = i + 1 //continue iterating so we can fill our slice properly
 		}
 	} else {
-		panic("Couldn't fill enough players")
+		return nil, errors.New("Couldn't find enough players")
 	}
-	return fill
+	return fill, nil
 }
 
 func findRealPlayerInQueue(hub *Hub) PlayerAdded { //Finds a real player in the queue, if one exists. This is NOT error safe if one doesn't exist. Doesn't know if it's already returned you that player in another call. Use fillPlayerSlice
@@ -368,22 +387,116 @@ func findRealPlayerInQueue(hub *Hub) PlayerAdded { //Finds a real player in the 
 	return PlayerAdded{}
 }
 
-func DummyMatch(hub *Hub) *Match { //change string to SteamID2 type?
-	players := fillPlayerSlice(2, true)
-	log.Println("Received fill slice: ", players)	
-	player1 := players[0].Steamid
-	player2 := players[1].Steamid
+/*The functional process for starting a match should be:
+	Make a match via algorithm (in tesitng, DummyMatch)		(hub -> Match)
+	Send the ready up signal to the players, temporarily remove them from queue (Match, hub -> void)
+		Both players ready up: Initialize the match to the game server
+		Player(s) fail to ready up: Restore any player who readied to the queue (using same PlayerAdded object as before, preserving WaitingSince)
+									Leave unready players out of queue
+*/
+
+func DummyMatch(hub *Hub) (*prematch, error) { //change string to SteamID2 type? hub should always be userHub
+	players, err := fillPlayerSlice(2, true)
+	if err != nil {
+		return nil, err
+	}
+	log.Println("Received fill slice: ", players)
 	
 	//remove players from queue, update queue for all players
-	delete(GameQueue, player1) //delete(map, key)
-	delete(GameQueue, player2)
-	SendQueueToClients(hub)
+	RemovePlayersFromQueue(players, hub)
+	return CreatePreMatchObject(players, hub), nil
+}
 
-	//send match to server
-	log.Println("Matching together", player1, player2)
+func CreatePreMatchObject(players []PlayerAdded, hub *Hub) *prematch {
+	log.Println("Matching together", players[0].Steamid, players[1].Steamid)
 	server := "1" //TODO: SelectServer() function if I scale out to multiple servers. I'm keeping server as a string for now in case I want to identify servers in another way.
-	arena := 1 // Random. TODO: Selection
-	return &Match{Type: "matchInit", Server: server, Arena: arena, P1: player1, P2: player2, Configuration: make(map[string]string)}
+	arena := 1 // Random. TODO: Selection.
+	return &prematch{Server: server, Arena: arena, Configuration: make(map[string]string), Players: players, timer: nil, hub: hub}
+}
+
+func (m *prematch) SendReadyUpPrompt() {
+	for _, player := range m.Players {
+		c := player.Connection
+		if c == nil {
+			if player.Steamid == "FakePlayer" {
+				continue
+			} else {
+				log.Println("Couldn't send rup signal to player (no connection object)", player)
+			}
+		} else {
+			c.sendJSON <- NewRupSignalMsg(true, false)
+		}
+	}
+	m.timer = time.NewTimer(time.Second * time.Duration(rupTime))
+	Prematches = append(Prematches, m)
+	
+	p1 := m.Players[0].Connection
+	p2 := m.Players[1].Connection
+	if (p2 == nil) { //This block is for testing with fake players
+		if (m.Players[1].Steamid == "FakePlayer") {
+			p2 = NewFakeConnection()
+			go func() {
+				<-time.After(7 * time.Second) //Go rules
+				p2.playerReady <- true
+			}()
+		} else {
+			log.Println("Couldn't send rup signal to player 2", m.Players[1])
+			return
+		}
+	}
+	go func() {
+		p1ready := false
+		p2ready := false
+		for !(p1ready && p2ready) { //while not both players readied
+			select {
+				case <- m.timer.C: //Block until timer reaches maturity
+					m.ExpireRup([]bool{p1ready, p2ready})
+					return //NO MORE FUNCTION!!! >:(
+				case <- p1.playerReady: //r1 receives a true only when the client sends a message.
+					p1ready = true
+					log.Println("player 1 has readied")
+				case <- p2.playerReady:
+					p2ready = true
+					log.Println("player 2 has readied")
+			}
+		}
+		log.Println("both players have readied")
+		m.ExpireRup([]bool{false, false}) //We're "kicking" both from the queue but in this case we're going to follow it up with making a match :-) Hehehe
+	}()
+}
+
+//ExpireRup is used to end the rup timer and manage the queue
+//Pass a slice of 2 bools that match to ready signals for players in the slice m.Players
+func (m *prematch) ExpireRup(readies []bool) {
+	log.Println("Expiring Rup, player 1 and 2 back to queue?:", readies)
+	m.timer.Stop() //Stop the timer, if it hasn't executed yet
+	m.timer = nil
+	log.Println("bruh")
+	for i, player := range m.Players {
+		if player.Steamid != "FakePlayer" {
+			if readies[i] == true { //player was ready when timer ended, add them back to queue
+				QueueUpdate(true, player.Connection)
+			} else {	//player didn't ready, remove them from idling in queue
+				QueueUpdate(false, player.Connection)
+			}
+			if player.Connection != nil {
+				player.Connection.sendJSON <- NewRupSignalMsg(false, false)
+			}
+		}
+	}
+}
+
+func RemovePlayersFromQueue(players []PlayerAdded, hub *Hub) {
+	for _, p := range players {
+		delete(GameQueue, p.Steamid)
+	}
+	if hub != nil {
+		SendQueueToClients(hub)
+	}
+}
+
+func NewFakeConnection() *connection {
+	return &connection{playerReady: make(chan bool, 8)}
 }
 
 /*

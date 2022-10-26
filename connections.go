@@ -12,6 +12,7 @@ type connection struct {
 	id string //steamid for users or a To Be Decided for gameservers
 	sendText chan []byte
 	sendJSON chan interface{}
+	playerReady chan bool
 	h *Hub
 }
 
