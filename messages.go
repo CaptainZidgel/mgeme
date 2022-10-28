@@ -33,6 +33,9 @@ type QueueJoinLeave struct { //Comes from users: Join or leave the queue
 type ServerHelloWorld struct { //Comes from gameserver to initialize connections.
 	ApiKey string `json:"apiKey"`
 	ServerNum string `json:"serverNum"`
+	ServerHost string `json:"serverHost"`
+	ServerPort string `json:"serverPort"`
+	StvPort string `json:"stvPort"`
 }
 
 type MatchResults struct {
@@ -71,6 +74,21 @@ func NewRupSignalMsg(show, selfrupped bool) RupSignal { //I should move to this 
 	return RupSignal{Type: "RupSignal", ShowPrompt: show, SelfRupped: selfrupped, ExpireAt: time.Now().Add(time.Second * time.Duration(rupTime)).Unix()}
 }
 
+type ServerIssue struct { //Used to communicate with users that something is interrupting the service (ie, a gameserver is down, the webserver is erroring, idk something like that
+	Type string `json:"type"`
+	Code int `json:"code"`
+	Message string `json:"msg"`
+}
+//Codes: (First digit should relate to severity, 1 being a warning and 2 being a total interruption of service
+//200 - Game servers not available
+
+func alertPlayers(code int, message string, h *Hub) {
+	msg := ServerIssue{Type: "ServerIssue", Code: code, Message: message}
+	for c := range h.connections {
+		c.sendJSON <- msg
+	}
+}
+
 func HandleMessage(msg Message, steamid string, conn *connection) error { //get steamid from server (which gets it from browser session after auth), don't trust users to send it in json. pass the websocket connection so we can send stuff back if needed, or pass it to further functions
 	fmt.Println(msg.Type)
 	if msg.Type == "QueueUpdate" { // {type: "QueueUpdate", payload: {joining: true/false}} Comes from users
@@ -88,9 +106,9 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 	} else if msg.Type == "TestMatch" {
 		m, err := DummyMatch(conn.h)
 		if err != nil { log.Fatalln(err) }
-		m.SendReadyUpPrompt()
+		m.sendReadyUpPrompt()
 		//SendMatchToServer(m)
-	} else if msg.Type == "hworld" { //Comes from gameservers
+	} else if msg.Type == "ServerHello" { //Comes from gameservers
 		var res ServerHelloWorld
 		err := json.Unmarshal(msg.Payload, &res)
 		if err != nil {
@@ -98,6 +116,8 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 		}
 		fmt.Printf("Game Server %s connected\n", res.ServerNum)
 		conn.id = res.ServerNum
+		res.ApiKey = "" //clear this out of memory (it should have been used and verified by now)
+		conn.h.connections[conn] = res
 	} else if msg.Type == "MatchResults" {
 		var res MatchResults
 		err := json.Unmarshal(msg.Payload, &res)

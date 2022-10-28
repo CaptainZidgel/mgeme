@@ -14,6 +14,7 @@ type connection struct {
 	sendJSON chan interface{}
 	playerReady chan bool
 	h *Hub
+	object interface{}
 }
 
 func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn) {

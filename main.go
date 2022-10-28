@@ -59,6 +59,7 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 
 var SelectElo *sql.Stmt
 var gameHub *Hub
+var userHub *Hub
 
 func main() {
 	rupTime = 5
@@ -101,7 +102,7 @@ func main() {
 		}
 	})
 
-	userHub := newHub("user")
+	userHub = newHub("user")
 	rout.GET("/websock", func(c *gin.Context) {	//The endpoint for user connections (ie users adding up to play, but not for servers connecting to transmit messages)
 		c.Set("Hub", userHub) //all websocket connections should have the same hub (server)
 		WsServer(c)
@@ -266,9 +267,9 @@ func WsServer(c *gin.Context) {
 			return
 		}
 		
-		var user User
+		var id string
 		if lgdin {
-			user = usr.(User) //cast the context var to a User type
+			id = usr.(User).id //cast the context var to a User type
 		}
 
 		c := &connection{
@@ -276,7 +277,7 @@ func WsServer(c *gin.Context) {
 			sendJSON: make(chan interface{}, 1024),
 			playerReady: make(chan bool, 8),
 			h: hub, 
-			id: user.id,
+			id: id,
 		} //create our ws connection object
 		hub.addConnection(c) //Add our connection to the hub
 		defer hub.removeConnection(c) //Remove
@@ -334,30 +335,61 @@ type prematch struct {
 	hub *Hub //I still need to find a good way to get hub to all funcs, look I'll fix it later OK i'm working on the fun stuff right now (<- he is lying to you)
 }
 
+type matchServerInfo struct { //Just the stuff users need to know
+	Id string	`json:"id"`
+	Host string `json:"ip"`
+	Port string	`json:"port"`
+	Stv string	`json:"stv"`
+}
+
 //Finalized object to send to game servers (includes type param for JSON)
 type Match struct {
 	Type string `json:"type"` //This sucks. I have to have type here so I don't dupe my code into the messages section but I don't like having my object here be the same as my json message object.
-	Server string `json:"serverId"`
 	Arena int `json:"arenaId"`
 	P1id string `json:"p1Id"` //players1 and 2 ids
 	P2id string `json:"p2Id"`
 	Configuration map[string]string `json:"matchCfg"` //reserved: configuration may be something like "scout vs scout" or "demo vs demo" perhaps modeled as "cfg": "svs" or p1class : p2class
+	Server matchServerInfo `json:"gameServer"`
 }
 
-func SendMatchToServer(match Match) {
-	serverid := match.Server
-	c := gameHub.findConnection(serverid)
+func (m *prematch) initializeMatch() {
+	//Send match to server
+	serverid := m.Server	//prematch serverid
+	c := gameHub.findConnection(serverid)	//find connection for this id
 	if c == nil {
-		log.Fatalf("No server to send match to")
+		alertPlayers(200, "Can't connect to game servers...", m.hub)
+		log.Println("No server to send match to. Cancelling match")
+		//Cancel matchmaker until servers come back online? Probably using a channel, mmSentinel <- 1
+		clearPrematches()
+		return
 	}
+	sv := gameHub.connections[c].(ServerHelloWorld) //get server object
+	match := Match{
+		Type: "MatchDetails", 
+		Arena: m.Arena, 
+		Configuration: m.Configuration, 
+		P1id: m.Players[0].Steamid, 
+		P2id: m.Players[1].Steamid,
+		Server: matchServerInfo{
+			Id: serverid,
+			Host: sv.ServerHost,
+			Port: sv.ServerPort,
+			Stv: sv.StvPort,
+		}}
 	c.sendJSON <- match
+	//Do stuff for users?
+	for _, player := range m.Players {
+		if player.Steamid != "FakePlayer" {
+			player.Connection.sendJSON <- match
+		}
+	}
 }
 
 func fillPlayerSlice(num int, fallback bool) ([]PlayerAdded, error) {
 	fill := make([]PlayerAdded, num) //Create empty slice of PlayerAdded elements, length num. instead of dynamically resizing with fill = append(fill, x) we're just going to assign x to fill[i]
 	i := 0
-	for key := range GameQueue {
-		if GameQueue[key].Connection.id == "FakePlayer" {continue} else {log.Println("Adding to fill: ", key)} //only use real players
+	for key, val := range GameQueue {
+		if val.Connection.id == "FakePlayer" {continue} else {log.Println("Adding to fill: ", key)} //only use real players
 		fill[i] = GameQueue[key]
 		i = i + 1
 		if i == num {
@@ -403,18 +435,18 @@ func DummyMatch(hub *Hub) (*prematch, error) { //change string to SteamID2 type?
 	log.Println("Received fill slice: ", players)
 	
 	//remove players from queue, update queue for all players
-	RemovePlayersFromQueue(players, hub)
-	return CreatePreMatchObject(players, hub), nil
+	removePlayersFromQueue(hub, players...)
+	return createPreMatchObject(players, hub), nil
 }
 
-func CreatePreMatchObject(players []PlayerAdded, hub *Hub) *prematch {
+func createPreMatchObject(players []PlayerAdded, hub *Hub) *prematch {
 	log.Println("Matching together", players[0].Steamid, players[1].Steamid)
 	server := "1" //TODO: SelectServer() function if I scale out to multiple servers. I'm keeping server as a string for now in case I want to identify servers in another way.
 	arena := 1 // Random. TODO: Selection.
 	return &prematch{Server: server, Arena: arena, Configuration: make(map[string]string), Players: players, timer: nil, hub: hub}
 }
 
-func (m *prematch) SendReadyUpPrompt() {
+func (m *prematch) sendReadyUpPrompt() {
 	for _, player := range m.Players {
 		c := player.Connection
 		if c == nil {
@@ -436,7 +468,7 @@ func (m *prematch) SendReadyUpPrompt() {
 		if (m.Players[1].Steamid == "FakePlayer") {
 			p2 = NewFakeConnection()
 			go func() {
-				<-time.After(7 * time.Second) //Go rules
+				<-time.After(4 * time.Second) //Go rules
 				p2.playerReady <- true
 			}()
 		} else {
@@ -450,7 +482,7 @@ func (m *prematch) SendReadyUpPrompt() {
 		for !(p1ready && p2ready) { //while not both players readied
 			select {
 				case <- m.timer.C: //Block until timer reaches maturity
-					m.ExpireRup([]bool{p1ready, p2ready})
+					m.expireRup(p1ready, p2ready)
 					return //NO MORE FUNCTION!!! >:(
 				case <- p1.playerReady: //r1 receives a true only when the client sends a message.
 					p1ready = true
@@ -461,17 +493,17 @@ func (m *prematch) SendReadyUpPrompt() {
 			}
 		}
 		log.Println("both players have readied")
-		m.ExpireRup([]bool{false, false}) //We're "kicking" both from the queue but in this case we're going to follow it up with making a match :-) Hehehe
+		m.expireRup(false, false) //We're "kicking" both from the queue but in this case we're going to follow it up with making a match :-) Hehehe
+		m.initializeMatch()
 	}()
 }
 
 //ExpireRup is used to end the rup timer and manage the queue
 //Pass a slice of 2 bools that match to ready signals for players in the slice m.Players
-func (m *prematch) ExpireRup(readies []bool) {
+func (m *prematch) expireRup(readies ...bool) {
 	log.Println("Expiring Rup, player 1 and 2 back to queue?:", readies)
 	m.timer.Stop() //Stop the timer, if it hasn't executed yet
 	m.timer = nil
-	log.Println("bruh")
 	for i, player := range m.Players {
 		if player.Steamid != "FakePlayer" {
 			if readies[i] == true { //player was ready when timer ended, add them back to queue
@@ -486,7 +518,18 @@ func (m *prematch) ExpireRup(readies []bool) {
 	}
 }
 
-func RemovePlayersFromQueue(players []PlayerAdded, hub *Hub) {
+func clearPrematches() {
+	for _, m := range Prematches {
+		//Add players back to queue: Not calling expireRup as a shortcut for this because that would send a rupsignal and start a client timer.
+		for _, p := range m.Players {
+			GameQueue[p.Steamid] = p //Not using QueueUpdate, as to avoid sending a queue message for every player. Waiting until after.
+		}
+	}
+	SendQueueToClients(userHub)
+	Prematches = make([]*prematch, 0)
+}
+
+func removePlayersFromQueue(hub *Hub, players ...PlayerAdded) {
 	for _, p := range players {
 		delete(GameQueue, p.Steamid)
 	}

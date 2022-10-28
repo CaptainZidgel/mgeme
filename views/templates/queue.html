@@ -3,10 +3,18 @@
 <script src="https://unpkg.com/vue@3"></script>
 <h1>Hi</h1>
 <div id="app">
+	<div id="statusBox" v-if="serviceStatus.status > 0">
+		<p>{{"{{serviceStatus.msg}}"}}
+	</div>
 	<div id="rupBox" v-if="rupStatus.showPrompt">
 		<h3>{{"{{rupPromptMessage()}}"}}</h3>
 		<button v-on:click="readyUp(true)" v-if="!rupStatus.selfRupped">Ready</button>
 		<p>{{"{{rupTimeLeft}}"}} Seconds Remaining</p>
+	</div>
+		
+	<div id="matchDetails" v-if="matchDetails != null">
+		<p>You're in a match</p>
+		<p>{{"{{matchDetails.p1id}}"}} vs {{"{{matchDetails.p2id}}"}}</p>
 	</div>
 	<div v-if="!loggedIn">
 		<h3>You're not logged in!</h3>
@@ -15,7 +23,7 @@
 	<div v-else>
 		<div v-if="socket && socket.readyState === socket.OPEN">
 			{{/*A quick Go comment for templating: Since Go and Vue both use curly braces, you're going to have to place your vue content in a string inside the Go braces*/}}
-			{{"{{arrow}}"}}<button v-on:click="joinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
+			{{"{{arrow}}"}}<button v-if="matchDetails == null" v-on:click="joinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
 			<br>
 			<br>
 			<button v-on:click="newMatch()">Test match</button>
@@ -34,6 +42,9 @@
 	</ul>
 </div>
 <script>
+//const SERVICE_HEALTHY = 0
+//const SERVICE_UNHEALTHY = 1
+//const SERVICE_INTERRUPTED = 2
 const app = Vue.createApp({
 	data() {
 		return {
@@ -49,6 +60,12 @@ const app = Vue.createApp({
 			},
 			rupTimer: null,
 			rupTimeLeft: 0,
+			matchDetails: null,
+			serviceStatus: {
+				status: 0,
+				code: null,
+				msg: null,
+			}
 		}
 	},
 	mounted() { //lifecycle hook 
@@ -78,9 +95,20 @@ const app = Vue.createApp({
 					this.rupStatus.selfRupped = false
 					this.rupStatus.expireAt = data.expireAt
 					this.updateRupTimeLeft()
+					console.log("Beginning RUP timer")
 					this.rupTimer = setInterval(() => {
 						this.updateRupTimeLeft()
 					}, 1000)
+				}
+			} else if (data.type == "MatchDetails") {
+				this.matchDetails = data
+			} else if (data.type == "ServerIssue") {
+				let code = data.code
+				let level = parseInt(code.toString()[0])
+				this.serviceStatus = {
+					status: level,
+					code: code,
+					msg: data.msg,
 				}
 			}
 		}
@@ -137,6 +165,11 @@ app.mount("#app")
 		background-color: green;
 		width: 90%;
 		align-self: center;
+	}
+	
+	#statusBox {
+		background-color: red;
+		padding: 15px;
 	}
 </style>
 {{end}}
