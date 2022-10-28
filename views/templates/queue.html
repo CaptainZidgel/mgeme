@@ -14,7 +14,8 @@
 		
 	<div id="matchDetails" v-if="matchDetails != null">
 		<p>You're in a match</p>
-		<p>{{"{{matchDetails.p1id}}"}} vs {{"{{matchDetails.p2id}}"}}</p>
+		<p>{{"{{matchDetails.p1Id}}"}} vs {{"{{matchDetails.p2Id}}"}}</p>
+		<p>connect {{"{{matchDetails.gameServer.ip}}"}}:{{"{{matchDetails.gameServer.port}}"}}; password 2p2j</p>
 	</div>
 	<div v-if="!loggedIn">
 		<h3>You're not logged in!</h3>

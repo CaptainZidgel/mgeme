@@ -47,12 +47,10 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 		if id := session.Get("steamid"); id != nil {
 			user.id = id.(string)
 			user.elo = GetElo(user.id)
-		}
-		if user.id != "" {
 			c.Set("User", user)
-			log.Println("Authing user")
+			log.Println("Authorizing user with steamid", user.id)
 		} else {
-			log.Println("Not authing")
+			log.Println("session steamid was nil, not authorizing")
 		}
 	}
 } //this is fairly superfluous at this point but if i build out the User type I will want to add stuff here probably
@@ -146,7 +144,7 @@ func main() {
 	if err != nil { log.Fatal(err) }
 	defer SelectElo.Close()
 
-	AddPlayersTest(118, 14, userHub)
+	//AddPlayersTest(118, 14, userHub)
 	SendQueueToClients(userHub)
 	rout.Run(":8080") //run main router on 0.0.0.0:8080
 }
