@@ -242,8 +242,11 @@ type PlayerEntries map[string]PlayerAdded //this is a maptype of PlayerAdded str
 var GameQueue = make(PlayerEntries) //this is an instance of the maptype of PlayerAdded structs
 var Prematches []*prematch //Matches that are waiting for players to ready up (we need to keep these in memory so we can get player info back later)
 
-func WsServer(c *gin.Context) {
-	h, _ := c.Get("Hub")
+func WsServer(c *gin.Context) (error) {
+	h, xists := c.Get("Hub")
+	if !xists {
+		log.Fatalf("Request had no Hub key (check capitalization?) Keys: %v \n", c.Keys)
+	}
 	hub := h.(*Hub) //cast the context to Hub type. This hub may either be a user hub (groups the connections of users to the webserver) or a gameserver hub (groups the connections of game servers to the webserver)
 
 	usr, lgdin := c.Get("User") //lgdin (loggedin) represents if the key User exists in context
@@ -259,10 +262,10 @@ func WsServer(c *gin.Context) {
 			WriteBufferSize: 0,
 			CheckOrigin: func(r *http.Request) bool {return true},
 		}
-		conn, err := upgrader.Upgrade(w, r, nil)
+		wsConn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Println(err)
-			return
+			log.Println("Error at websocket initialization:", err)
+			return err
 		}
 		
 		var id string
@@ -270,23 +273,47 @@ func WsServer(c *gin.Context) {
 			id = usr.(User).id //cast the context var to a User type
 		}
 
-		c := &connection{
+		clientConn := &connection{
 			sendText: make(chan []byte, 256), 
 			sendJSON: make(chan interface{}, 1024),
 			playerReady: make(chan bool, 8),
 			h: hub, 
 			id: id,
 		} //create our ws connection object
-		hub.addConnection(c) //Add our connection to the hub
-		defer hub.removeConnection(c) //Remove
+		hub.addConnection(clientConn) //Add our connection to the hub
+		if hubtype == "user" {
+			resolveConnectingUser(clientConn, c)
+		}
+		defer hub.removeConnection(clientConn) //Remove
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go c.writer(&wg, conn)
-		go c.reader(&wg, conn)
+		go clientConn.writer(&wg, wsConn)
+		go clientConn.reader(&wg, wsConn)
 		wg.Wait()
-		conn.Close()
+		wsConn.Close()
 	} else {
-		fmt.Printf("Rejecting websocket connection: %s, %s\n", lgdin, hubtype)
+		return fmt.Errorf("Rejecting websocket connection for unloggedin user")
+	}
+	return nil
+}
+
+func resolveConnectingUser(conn *connection, c *gin.Context) {
+	h, _ := c.Get("Hub")
+	hub := h.(*Hub)
+	user := hub.connections[conn]
+	if user != struct{}{} {
+		log.Println("Resolving reconnected user")
+		user := user.(User)
+		for _, server := range hub.connections {
+			server := server.(gameServer)
+			matchIndex := server.findMatchByPlayer(user.id)
+			if matchIndex > -1 {
+				conn.sendJSON <- server.Matches[matchIndex]
+				break
+			}
+		}
+	} else {
+		log.Println("New user at resolve point?")
 	}
 }
 
@@ -294,8 +321,10 @@ func QueueUpdate(joining bool, conn *connection) { //The individual act of joini
 	steamid := conn.id
 	if joining { //add to queue
 			GameQueue[steamid] = PlayerAdded{Connection: conn, Steamid: steamid, Elo: GetElo(conn.id), WaitingSince: time.Now()}//steamid//lol
+			log.Println("Adding to queue")
 	} else { //remove from queue
 			delete(GameQueue, steamid) //remove steamid from gamequeue
+			log.Println("Removing from queue")
 	}
 
 	SendQueueToClients(conn.h)
@@ -333,8 +362,30 @@ type prematch struct {
 	hub *Hub //I still need to find a good way to get hub to all funcs, look I'll fix it later OK i'm working on the fun stuff right now (<- he is lying to you)
 }
 
+type gameServer struct { //The stuff the webserver will want to know, doesn't necessarily have info like the IP as that isn't necessary.
+	Matches []Match
+	Id string
+	Info matchServerInfo
+}
+
+//Find what match contains a certain player (since players can only be in one match at a time, it should be sufficient to only pass one player)
+//Return the index and not the match object since I'll probably be more interested in the match's position in the slice.
+func (s *gameServer) findMatchByPlayer(id string) (int) {
+	for i, m := range s.Matches {
+		if m.P1id == id || m.P2id == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (s *gameServer) deleteMatch(id int) {
+	s.Matches = append(s.Matches[:id], s.Matches[id+1])
+	//There are many ways in Go to remove something from a slice, but here I use the re-slicing method to avoid leaving nil spots in my slice
+	//This is relatively expensive but I think it should be better than having to resize my slice to 1,000 objects if I have 1,000 matches over 15 days of time.
+}
+
 type matchServerInfo struct { //Just the stuff users need to know
-	Id string	`json:"id"`
 	Host string `json:"ip"`
 	Port string	`json:"port"`
 	Stv string	`json:"stv"`
@@ -361,19 +412,15 @@ func (m *prematch) initializeMatch() {
 		clearPrematches()
 		return
 	}
-	sv := gameHub.connections[c].(ServerHelloWorld) //get server object
+	sv := gameHub.connections[c].(gameServer) //get server object
 	match := Match{
 		Type: "MatchDetails", 
 		Arena: m.Arena, 
 		Configuration: m.Configuration, 
 		P1id: m.Players[0].Steamid, 
 		P2id: m.Players[1].Steamid,
-		Server: matchServerInfo{
-			Id: serverid,
-			Host: sv.ServerHost,
-			Port: sv.ServerPort,
-			Stv: sv.StvPort,
-		}}
+		Server: sv.Info,
+	}
 	c.sendJSON <- match
 	//Do stuff for users?
 	for _, player := range m.Players {

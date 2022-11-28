@@ -31,9 +31,9 @@ func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn) {
 				break
 			} else if websocket.IsCloseError(err, 1006) { //1006 is the code SM sends when the server shuts down uncleanly (ie via Ctrl+C)
 				if c.h.hubType != "game" {
-					fmt.Printf("Unexpected user disconnect (1006) didn't close connection properly")
+					fmt.Println("Unexpected user disconnect (1006) didn't close connection properly")
 				} else {
-					fmt.Printf("Server %s didn't close properly (Websocket code 1006)", c.id)
+					fmt.Printf("Server %s didn't close properly (Websocket code 1006)/n", c.id)
 				}
 				c.h.removeConnection(c)
 				break

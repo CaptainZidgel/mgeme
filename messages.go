@@ -116,8 +116,15 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 		}
 		fmt.Printf("Game Server %s connected\n", res.ServerNum)
 		conn.id = res.ServerNum
-		res.ApiKey = "" //clear this out of memory (it should have been used and verified by now)
-		conn.h.connections[conn] = res
+		conn.h.connections[conn] = gameServer{
+			Info: matchServerInfo{
+				Host: res.ServerHost,
+				Port: res.ServerPort,
+				Stv: res.StvPort,
+			},
+			Id: res.ServerNum,
+			Matches: make([]Match, 0),
+		}
 	} else if msg.Type == "MatchResults" {
 		var res MatchResults
 		err := json.Unmarshal(msg.Payload, &res)
