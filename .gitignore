@@ -1,2 +1,4 @@
 *.json
 go.sum
+*.exe
+*.swp

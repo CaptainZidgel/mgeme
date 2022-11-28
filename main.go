@@ -7,7 +7,6 @@ import (
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-contrib/multitemplate"
 	"log"
-	"os"
 	"fmt"
 	"path/filepath"
 	"github.com/solovev/steam_go"
@@ -23,6 +22,7 @@ import (
 	"net"
 	"strings"
 	"errors"
+	"flag"
 )
 
 var rupTime int
@@ -60,6 +60,10 @@ var gameHub *Hub
 var userHub *Hub
 
 func main() {
+	wsHostPtr := flag.String("addr", getOutboundIp(), "Address to listen on (Relayed to clients to know where to send messages to, ie 'localhost' on windows)")
+	portPtr := flag.String("port", "8080", "Port to listen on")
+	flag.Parse()
+	
 	rupTime = 5
 
 	rout := gin.Default()
@@ -111,17 +115,10 @@ func main() {
 		c.Set("Hub", gameHub)
 		WsServer(c)
 	})
-	
-	var wsHost string
-	if len(os.Args) > 1 {
-		wsHost = os.Args[1]
-	} else {
-		wsHost = getOutboundIp()
-	}
 
 	rout.GET("/queue", func(c *gin.Context) {
 		_, loggedin := c.Get("User")
-		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": wsHost, "wsPort": 8080, "loggedIn": loggedin})
+		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin})
 	})
 	
 	content, err := ioutil.ReadFile("./DbCfg.json")
@@ -146,7 +143,7 @@ func main() {
 
 	//AddPlayersTest(118, 14, userHub)
 	SendQueueToClients(userHub)
-	rout.Run(":8080") //run main router on 0.0.0.0:8080
+	rout.Run(*wsHostPtr + ":" + *portPtr)
 }
 
 //https://stackoverflow.com/questions/23558425/how-do-i-get-the-local-ip-address-in-go
