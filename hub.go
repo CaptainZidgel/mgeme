@@ -44,14 +44,14 @@ func newHub(hubType string) *Hub {
 	return h
 }
 
-func (h *Hub) findConnection(id string) *connection {
+func (h *Hub) findConnection(id string) (*connection, interface{}) {
 	log.Println("Looking for conn", id, "in hub", h.hubType)
-	for conn := range h.connections {
+	for conn, object := range h.connections {
 		if conn.id == id {
-			return conn
+			return conn, object
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func (h *Hub) addConnection(conn *connection) {
@@ -59,9 +59,7 @@ func (h *Hub) addConnection(conn *connection) {
 	defer h.connectionsMx.Unlock()
 	h.connections[conn] = struct{}{}
 	log.Printf("Added connection to hub")
-	if (h.hubType == "user") {
-		QueueUpdate(false, conn) //We've just initialized the websocket connection. We do not automatically add the user to the queue. In fact, clear them out of it if they're in there.
-	} else if (h.hubType == "game") {
+	if (h.hubType == "game") {
 		conn.sendJSON <- &HelloWorld{Hello: "World!"}
 	}
 }

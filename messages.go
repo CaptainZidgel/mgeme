@@ -55,8 +55,9 @@ type AckQueue struct {
 	IsInQueue bool `json:"isInQueue"`
 }
 
-func NewAckQueueMsg (queue PlayerEntries, iiq bool) AckQueue {
-	return AckQueue{Type: "AckQueue", Queue: queue, IsInQueue: iiq}
+func NewAckQueueMsg (queue PlayerEntries, id string) AckQueue {
+	_, ok := queue[id]
+	return AckQueue{Type: "AckQueue", Queue: queue, IsInQueue: ok}
 }
 
 type HelloWorld struct {
@@ -70,8 +71,8 @@ type RupSignal struct {
 	ExpireAt int64 `json:"expireAt"`
 }
 
-func NewRupSignalMsg(show, selfrupped bool) RupSignal { //I should move to this format for all messages sent from Go server so I don't need to rewrite type
-	return RupSignal{Type: "RupSignal", ShowPrompt: show, SelfRupped: selfrupped, ExpireAt: time.Now().Add(time.Second * time.Duration(rupTime)).Unix()}
+func NewRupSignalMsg(show bool, selfrupped bool, deadline int) RupSignal { //I should move to this format for all messages sent from Go server so I don't need to rewrite type
+	return RupSignal{Type: "RupSignal", ShowPrompt: show, SelfRupped: selfrupped, ExpireAt: time.Now().Add(time.Second * time.Duration(deadline)).Unix()}
 }
 
 type ServerIssue struct { //Used to communicate with users that something is interrupting the service (ie, a gameserver is down, the webserver is erroring, idk something like that
@@ -89,8 +90,7 @@ func alertPlayers(code int, message string, h *Hub) {
 	}
 }
 
-func HandleMessage(msg Message, steamid string, conn *connection) error { //get steamid from server (which gets it from browser session after auth), don't trust users to send it in json. pass the websocket connection so we can send stuff back if needed, or pass it to further functions
-	fmt.Println(msg.Type)
+func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection) error { //get steamid from server (which gets it from browser session after auth), don't trust users to send it in json. pass the websocket connection so we can send stuff back if needed, or pass it to further functions
 	if msg.Type == "QueueUpdate" { // {type: "QueueUpdate", payload: {joining: true/false}} Comes from users
 		var res QueueJoinLeave
 		err := json.Unmarshal(msg.Payload, &res) //write to that empty instance
@@ -102,11 +102,11 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 				return err
 			}
 		}
-		QueueUpdate(res.Joining, conn)	//Update the server's master queue
+		w.queueUpdate(res.Joining, conn)	//Update the server's master queue
 	} else if msg.Type == "TestMatch" {
-		m, err := DummyMatch(conn.h)
+		m, err := w.dummyMatch()
 		if err != nil { log.Fatalln(err) }
-		m.sendReadyUpPrompt()
+		go w.sendReadyUpPrompt(m)
 		//SendMatchToServer(m)
 	} else if msg.Type == "ServerHello" { //Comes from gameservers
 		var res ServerHelloWorld
@@ -116,15 +116,16 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 		}
 		fmt.Printf("Game Server %s connected\n", res.ServerNum)
 		conn.id = res.ServerNum
-		conn.h.connections[conn] = gameServer{
+		gs := &gameServer{
 			Info: matchServerInfo{
+				Id: res.ServerNum,
 				Host: res.ServerHost,
 				Port: res.ServerPort,
 				Stv: res.StvPort,
 			},
-			Id: res.ServerNum,
-			Matches: make([]Match, 0),
+			Matches: make([]*Match, 0),
 		}
+		conn.h.connections[conn] = gs
 	} else if msg.Type == "MatchResults" {
 		var res MatchResults
 		err := json.Unmarshal(msg.Payload, &res)
@@ -137,9 +138,6 @@ func HandleMessage(msg Message, steamid string, conn *connection) error { //get 
 		fmt.Printf("Received MatchResults from Server %s : Winner %s , Loser %s ^ Finish Mode %s/n", conn.id, winner, loser, res.FinishMode)
 	} else if msg.Type == "Ready" {
 		conn.playerReady <- true
-	} else if msg.Type == "i dont know actually let me think about that" {
-		//res := MessageType
-		//JSON.Unmarshall(msg.Payload, &res)
 	} else {
 		return fmt.Errorf("Unknown message type: %s", msg.Type)
 	}

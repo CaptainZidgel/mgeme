@@ -17,36 +17,50 @@ type connection struct {
 	object interface{}
 }
 
-func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn) {
+func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn, webserver *webServer) {
 	defer wg.Done()
 	for {
 		var jmsg Message
 		err := conn.ReadJSON(&jmsg)
 		if err != nil {
-			fmt.Printf("Error reading json: %s\n", err.Error())
+			fmt.Printf("Error reading json for %s ID %s: ", c.h.hubType, c.id)
 			if websocket.IsCloseError(err, 1001) {
-				if c.h.hubType == "user" {QueueUpdate(false, c)}
-				c.h.removeConnection(c)
-				fmt.Printf("User navigated away, Disconnection (1001)\n")
-				break
-			} else if websocket.IsCloseError(err, 1006) { //1006 is the code SM sends when the server shuts down uncleanly (ie via Ctrl+C)
-				if c.h.hubType != "game" {
-					fmt.Println("Unexpected user disconnect (1006) didn't close connection properly")
+				if c.h.hubType == "user" {
+					webserver.queueUpdate(false, c)
+					fmt.Printf("User navigated away, Disconnection (1001)\n")
 				} else {
-					fmt.Printf("Server %s didn't close properly (Websocket code 1006)/n", c.id)
+					fmt.Printf("Game Server code 10001\n")
+				}
+				c.h.removeConnection(c)
+				break
+			} else if websocket.IsCloseError(err, 1006) { //1006 is the code SM sends when the server shuts down uncleanly (ie via Ctrl+C). It's also the code gorilla's websocket.Close() will call if you don't send a close message before hand.
+				if c.h.hubType != "game" {
+					fmt.Print("Unexpected user disconnect (1006) didn't close connection properly\n")
+				} else {
+					fmt.Print("Game Server didn't close properly (1006)\n")
 				}
 				c.h.removeConnection(c)
 				break
 			} else if websocket.IsCloseError(err, 1000) { //1000 is the code SM sends when the websocket closes properly in the code as the server quits or plugin is unloaded
 				if c.h.hubType == "game" {
-					fmt.Printf("Server %s shut down / plugin unloaded cleanly.", c.id)
+					fmt.Printf("Game Server shut down / plugin unloaded cleanly.\n")
+				} else {
+					fmt.Printf("User disconnect code 1000\n")
 				}
+				c.h.removeConnection(c)
+				break
+			} else if websocket.IsUnexpectedCloseError(err, 1000, 1001, 1006) { //If error isn't one of these codes
+				fmt.Printf("unexpected close error: %v\n", err)
+				c.h.removeConnection(c)
+				break
+			} else { //err is not a websocket close error
+				fmt.Printf("%v\n", err)
 				c.h.removeConnection(c)
 				break
 			}
 			continue
 		}
-		herr := HandleMessage(jmsg, c.id, c)
+		herr := webserver.HandleMessage(jmsg, c.id, c)
 		if herr != nil {
 			c.sendText <- []byte(herr.Error()) //This echos errors back to the sender. Need to update this as its nonfunctional atm.
 		}
