@@ -379,7 +379,8 @@ func (s *gameServer) findMatchByPlayer(id string) (int) {
 func (s *gameServer) deleteMatch(id int) {
 	s.Matches = append(s.Matches[:id], s.Matches[id+1])
 	//There are many ways in Go to remove something from a slice, but here I use the re-slicing method to avoid leaving nil spots in my slice
-	//This is relatively expensive but I think it should be better than having to resize my slice to 1,000 objects if I have 1,000 matches over 15 days of time.
+	//This is relatively expensive but I think it should be better than having to resize my slice to 1,000 objects, mostly nil, if I have 1,000 matches over 15 days of time.
+	log.Printf("Deleting match idx %d from server %s\n", id, s.Info.Id)
 }
 
 type matchServerInfo struct { //Just the stuff users need to know
@@ -390,10 +391,11 @@ type matchServerInfo struct { //Just the stuff users need to know
 }
 
 const (
-	MatchInit = 0
-	MatchRupSignal = 1
-	MatchStarted = 2
-	MatchOver = 3
+	matchInit = 0
+	matchRupSignal = 1
+	matchWaitingForPlayers = 2
+	matchPlaying = 3
+	matchOver = 4
 )
 
 //A match object should encapsulate an entire match from inception on the webserver to being sent to the game servers and the clients.
@@ -405,15 +407,16 @@ type Match struct {
 	P2id string `json:"p2Id"`
 	Configuration map[string]string `json:"matchCfg"` //reserved: configuration may be something like "scout vs scout" or "demo vs demo" perhaps modeled as "cfg": "svs" or p1class : p2class
 	ServerId string `json:"gameServer"`
+	Status int
+	ConnectDeadline int64 `json:"deadline"` //Not set until match initialization. Though this deadline is not used by the server, it will be useful to the client.
+	
 	timer *time.Timer //no json tag!! Don't serialize it!!
-	status int
 	players []PlayerAdded //unserialized helper thing :)
 }
 
+//Both players ready, send match to server and players.
 func (w *webServer) initializeMatch(m *Match) {
-	//Send match to server
-	serverid := m.ServerId
-	c, obj := w.gameServerHub.findConnection(serverid)	//find connection for this id
+	c, obj := w.gameServerHub.findConnection(m.ServerId)	//find connection for this id
 	if c == nil {
 		alertPlayers(200, "Can't connect to game servers...", w.playerHub)
 		log.Println("No server to send match to. Cancelling match")
@@ -421,12 +424,14 @@ func (w *webServer) initializeMatch(m *Match) {
 		w.clearAllMatches()
 		return
 	}
-	sv := obj.(*gameServer) //get server object
-	m.status = MatchStarted
+	m.Status = matchWaitingForPlayers
 	m.Type = "MatchDetails"
+	m.ConnectDeadline = time.Now().Add(time.Second * 180).Unix()
+	
+	sv := obj.(*gameServer) //get server object
 	sv.Matches = append(sv.Matches, m) //Adds the match to the webserver's records for this server
+	
 	c.sendJSON <- m //Sends match details to the gameserver (sourcemod)
-	//Do stuff for users?
 	for _, player := range m.players {
 			player.Connection.sendJSON <- m
 	}
@@ -496,7 +501,7 @@ func createMatchObject(players []PlayerAdded) *Match {
 		P1id: players[0].Steamid,
 		P2id: players[1].Steamid,
 		timer: nil,
-		status: MatchInit,
+		Status: matchInit,
 		players: players,
 	}
 }
@@ -511,23 +516,10 @@ func (w *webServer) sendReadyUpPrompt(m *Match) {
 		}
 	}
 	m.timer = time.NewTimer(time.Second * time.Duration(w.rupTime))
-	m.status = MatchRupSignal
+	m.Status = matchRupSignal
 	
 	p1 := m.players[0].Connection
 	p2 := m.players[1].Connection
-	/*
-	if (p2 == nil) { //This block is for testing with fake players
-		if (m.players[1].Steamid == "FakePlayer") {
-			p2 = NewFakeConnection()
-			go func() {
-				<-time.After(4 * time.Second) //Go rules
-				p2.playerReady <- true
-			}()
-		} else {
-			log.Println("Couldn't send rup signal to player 2", m.players[1])
-			return
-		}
-	}*/
 	p1ready := false
 	p2ready := false
 	for !(p1ready && p2ready) { //while not both players readied
