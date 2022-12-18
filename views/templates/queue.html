@@ -13,9 +13,15 @@
 	</div>
 		
 	<div id="matchDetails" v-if="matchDetails != null">
-		<p>You're in a match</p>
-		<p>{{"{{matchDetails.p1Id}}"}} vs {{"{{matchDetails.p2Id}}"}}</p>
-		<p>connect {{"{{matchDetails.gameServer.ip}}"}}:{{"{{matchDetails.gameServer.port}}"}}; password 2p2j</p>
+		<div v-if="matchDetails.deadline > epoch()">
+			<p>You're in a match</p>
+			<p>{{"{{matchDetails.p1Id}}"}} vs {{"{{matchDetails.p2Id}}"}}</p>
+			<p>connect {{"{{matchDetails.gameServer.ip}}"}}:{{"{{matchDetails.gameServer.port}}"}}; password 2p2j</p>
+			<p>You have {{"{{matchDetails.deadline - epoch()}}"}} seconds left to connect!
+		</div>
+		<div v-else>
+			<p>You have failed to appear for your court date. Shame, shame on you.</p>
+		</div>
 	</div>
 	<div v-if="!loggedIn">
 		<h3>You're not logged in!</h3>
@@ -122,8 +128,11 @@ const app = Vue.createApp({
 		rupPromptMessage() {
 			return this.rupStatus.selfRupped ? "Waiting on Partner" : "Are you ready to play?"
 		},
+		epoch() {
+			return Math.floor(Date.now() / 1000)
+		},
 		updateRupTimeLeft() {
-			let now = Math.floor(Date.now() / 1000)
+			let now = epoch()
 			let expire = this.rupStatus.expireAt
 			console.log("t:", now, expire)
 			if (expire < now) {

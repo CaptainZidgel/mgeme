@@ -48,6 +48,14 @@ type MatchResults struct {
 	FinishMode string `json:"finishMode"`
 }
 
+type MatchCancel struct {
+	Delinquents []string `json:"delinquents"`
+}
+
+type MatchBegan struct {
+	P1 string `json:"p1"`
+	P2 string `json:"p2"`
+}
 
 
 
@@ -95,67 +103,88 @@ func alertPlayers(code int, message string, h *Hub) {
 }
 
 func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection) error { //get steamid from server (which gets it from browser session after auth), don't trust users to send it in json. pass the websocket connection so we can send stuff back if needed, or pass it to further functions
-	if msg.Type == "QueueUpdate" { // {type: "QueueUpdate", payload: {joining: true/false}} Comes from users
-		var res QueueJoinLeave
-		err := json.Unmarshal(msg.Payload, &res) //write to that empty instance
-		if err != nil {
-			fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
-			if err.Error() == "unexpected end of JSON input" {
-				return errors.New("Malformed JSON input") //not necessarily unexpected end. could be bad format, ie payload named msg or something
-			} else {
-				return err
+	connType := conn.h.hubType
+	if connType == "user" {
+		if msg.Type == "QueueUpdate" { // {type: "QueueUpdate", payload: {joining: true/false}} Comes from users
+			var res QueueJoinLeave
+			err := json.Unmarshal(msg.Payload, &res) //write to that empty instance
+			if err != nil {
+				fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
+				if err.Error() == "unexpected end of JSON input" {
+					return errors.New("Malformed JSON input") //not necessarily unexpected end. could be bad format, ie payload named msg or something
+				} else {
+					return err
+				}
 			}
-		}
-		w.queueUpdate(res.Joining, conn)	//Update the server's master queue
-	} else if msg.Type == "TestMatch" {
-		var res TestMatch
-		json.Unmarshal(msg.Payload, &res)
-		if res.X == "1v1" {
-			m, err := w.dummyMatch()
-			if err != nil { log.Fatal("%v", err) }
-			go w.sendReadyUpPrompt(m)
-		} else if res.X == "1v_" {
-			m := &Match{
-				Arena: 1,
-				P1id: steamid,
-				P2id: "FakePlayer",
-				ServerId: "1",
-				players: []PlayerAdded{PlayerAdded{Steamid: steamid, Connection: conn}, PlayerAdded{Steamid: "FakePlayer", Connection: NewFakeConnection()}},
+			w.queueUpdate(res.Joining, conn)	//Update the server's master queue
+		} else if msg.Type == "Ready" {
+			conn.playerReady <- true
+		} else if msg.Type == "TestMatch" {
+			var res TestMatch
+			json.Unmarshal(msg.Payload, &res)
+			if res.X == "1v1" {
+				m, err := w.dummyMatch()
+				if err != nil { log.Fatal("%v", err) }
+				go w.sendReadyUpPrompt(m)
+			} else if res.X == "1v_" {
+				m := &Match{
+					Arena: 1,
+					P1id: steamid,
+					P2id: "FakePlayer",
+					ServerId: "1",
+					players: []PlayerAdded{PlayerAdded{Steamid: steamid, Connection: conn}, PlayerAdded{Steamid: "FakePlayer", Connection: NewFakeConnection()}},
+				}
+				w.initializeMatch(m)
 			}
-			w.initializeMatch(m)
+		} else {
+			return fmt.Errorf("Unknown message type: %s", msg.Type)
 		}
-	} else if msg.Type == "ServerHello" { //Comes from gameservers
-		var res ServerHelloWorld
-		err := json.Unmarshal(msg.Payload, &res)
-		if err != nil {
-			fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
+	} else if connType == "game" { //Ensure user connections can't send server messages
+		if msg.Type == "ServerHello" {
+			var res ServerHelloWorld
+			err := json.Unmarshal(msg.Payload, &res)
+			if err != nil {
+				fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
+			}
+			fmt.Printf("Game Server %s connected\n", res.ServerNum)
+			conn.id = res.ServerNum
+			gs := &gameServer{
+				Info: matchServerInfo{
+					Id: res.ServerNum,
+					Host: res.ServerHost,
+					Port: res.ServerPort,
+					Stv: res.StvPort,
+				},
+				Matches: make([]*Match, 0),
+			}
+			conn.h.connections[conn] = gs
+		} else if msg.Type == "MatchResults" {
+			var res MatchResults
+			err := json.Unmarshal(msg.Payload, &res)
+			if err != nil {
+				fmt.Println("Error unmarshaling MatchResults", err.Error(), "|", string(msg.Payload))
+			}
+			//do something
+			winner := res.Winner
+			loser := res.Loser
+			fmt.Printf("Received MatchResults from Server %s : Winner %s , Loser %s ^ Finish Mode %s/n", conn.id, winner, loser, res.FinishMode)
+		} else if msg.Type == "MatchCancel" {
+			var res MatchCancel
+			err := json.Unmarshal(msg.Payload, &res)
+			if err != nil {
+				fmt.Println("Error unmarshaling MatchCancel", err.Error(), "|", string(msg.Payload))
+			}
+			for _ = range res.Delinquents {
+				//TODO: Punish(id)
+				continue
+			}
+			//TODO: Send cancellation signal to users
+			sv := conn.object.(*gameServer)
+			matchIndex := sv.findMatchByPlayer(res.Delinquents[0])
+			sv.deleteMatch(matchIndex)
+		} else {
+			return fmt.Errorf("Unknown message type: %s", msg.Type)
 		}
-		fmt.Printf("Game Server %s connected\n", res.ServerNum)
-		conn.id = res.ServerNum
-		gs := &gameServer{
-			Info: matchServerInfo{
-				Id: res.ServerNum,
-				Host: res.ServerHost,
-				Port: res.ServerPort,
-				Stv: res.StvPort,
-			},
-			Matches: make([]*Match, 0),
-		}
-		conn.h.connections[conn] = gs
-	} else if msg.Type == "MatchResults" {
-		var res MatchResults
-		err := json.Unmarshal(msg.Payload, &res)
-		if err != nil {
-			fmt.Println("Error unmarshaling MatchResults", err.Error(), "|", string(msg.Payload))
-		}
-		//do something
-		winner := res.Winner
-		loser := res.Loser
-		fmt.Printf("Received MatchResults from Server %s : Winner %s , Loser %s ^ Finish Mode %s/n", conn.id, winner, loser, res.FinishMode)
-	} else if msg.Type == "Ready" {
-		conn.playerReady <- true
-	} else {
-		return fmt.Errorf("Unknown message type: %s", msg.Type)
 	}
 	return nil
 }

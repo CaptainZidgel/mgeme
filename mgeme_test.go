@@ -286,3 +286,45 @@ func TestReadyUpMismatch(t *testing.T) {
 		t.Fatalf("Waiter or Baiter values not correct. (Want true & false, got %t & %t)\n", waiterInQueue, baiterInQueue)
 	}
 }
+
+//Todo:
+//func TestReadyUpBothGood(t *testing.T) {
+
+/*func TestWaitingForPlayersOneGood(t *testing.T) {
+	mgeme := newWebServer()
+	mgeme.wfpSeconds = 3
+	mgeme.playerHub.addConnection(&connection{
+			sendText: make(chan []byte, 256), 
+			sendJSON: make(chan interface{}, 1024),
+			playerReady: make(chan bool, 8),
+			id: "Baiter", //this user doesn't ready
+		})
+		
+	sv := createServerHandler(
+		mgeme,
+		defaultErrHandler,
+		t,
+		setDefaultId("Waiter"), //this user readies
+		GetUser(), //Required to check if loggedin
+	)
+	
+	userConn, gameConn, server := createUserAndServerConns(sv, t)
+	defer userConn.Close()
+	defer gameConn.Close()
+	defer server.Close()
+	
+	waiter, _ := mgeme.playerHub.findConnection("Waiter") //the client connection that wraps around the websocket connection userConn
+	baiter, _ := mgeme.playerHub.findConnection("Baiter")
+	
+	match := mgeme.createMatchObject([]PlayerAdded{
+		PlayerAdded{Connection: Waiter, Steamid: "Waiter"}, PlayerAdded{Connection: Baiter, Steamid: "Baiter"}
+	})
+	go mgeme.initializeMatch(match)
+	
+	go func() {
+		//Mocking the game server. We want to send back info that one 
+		_ := readWaitFor(gameConn, "MatchDetails", t, false)
+		var md Match
+		json.Unmarshal(msg, &md)
+	}()
+}*/
