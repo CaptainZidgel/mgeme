@@ -27,7 +27,8 @@
 			{{"{{arrow}}"}}<button v-if="matchDetails == null" v-on:click="joinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
 			<br>
 			<br>
-			<button v-on:click="newMatch()">Test match</button>
+			<button v-on:click="newMatch({X: '1v1'})">Test match (2 real players)</button>
+			<button v-on:click="newMatch({X: '1v_'})">Test match (1 real player) </button>
 			<br>
 			<br>
 		</div>
@@ -137,8 +138,8 @@ const app = Vue.createApp({
 			console.log("Sending QUpdate", joining)
 			this.socket.send(JSON.stringify({type: "QueueUpdate", payload: {joining: joining}}))
 		},
-		newMatch() {
-			this.socket.send(JSON.stringify({type: "TestMatch", payload: {}}))
+		newMatch(payload) {
+			this.socket.send(JSON.stringify({type: "TestMatch", payload: payload}))
 		},
 		readyUp(r) {
 			this.rupStatus.selfRupped = r

@@ -25,6 +25,10 @@ type QueueJoinLeave struct { //Comes from users: Join or leave the queue
 	Joining bool `json:"joining"` //true for join, false for leave
 }
 
+type TestMatch struct { //Can't do everything with unit testing! Send a pseudomatch to the server
+	X string `json:"X"` //"1v1" picks 2 real players, "1v_" picks 1 real player
+}
+
 //User can also send a very simple {type: "Ready"} "ready" signal that doesn't need a payload
 
 ///
@@ -104,10 +108,22 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 		}
 		w.queueUpdate(res.Joining, conn)	//Update the server's master queue
 	} else if msg.Type == "TestMatch" {
-		m, err := w.dummyMatch()
-		if err != nil { log.Fatalln(err) }
-		go w.sendReadyUpPrompt(m)
-		//SendMatchToServer(m)
+		var res TestMatch
+		json.Unmarshal(msg.Payload, &res)
+		if res.X == "1v1" {
+			m, err := w.dummyMatch()
+			if err != nil { log.Fatal("%v", err) }
+			go w.sendReadyUpPrompt(m)
+		} else if res.X == "1v_" {
+			m := &Match{
+				Arena: 1,
+				P1id: steamid,
+				P2id: "FakePlayer",
+				ServerId: "1",
+				players: []PlayerAdded{PlayerAdded{Steamid: steamid, Connection: conn}, PlayerAdded{Steamid: "FakePlayer", Connection: NewFakeConnection()}},
+			}
+			w.initializeMatch(m)
+		}
 	} else if msg.Type == "ServerHello" { //Comes from gameservers
 		var res ServerHelloWorld
 		err := json.Unmarshal(msg.Payload, &res)

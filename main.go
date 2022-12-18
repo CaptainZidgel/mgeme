@@ -288,8 +288,8 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) (error) {
 			id: id,
 		} //create our ws connection object
 		hub.addConnection(clientConn) //Add our connection to the hub
-		clientConn.sendJSON <- NewAckQueueMsg(w.gameQueue, id)
 		if hubtype == "user" {
+			clientConn.sendJSON <- NewAckQueueMsg(w.gameQueue, id)
 			hub.connections[clientConn] = usr.(User)
 			w.resolveConnectingUser(clientConn)
 		}
