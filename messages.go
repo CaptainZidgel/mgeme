@@ -50,6 +50,8 @@ type MatchResults struct {
 
 type MatchCancel struct {
 	Delinquents []string `json:"delinquents"`
+	Arrived string `json:"arrived"`
+	Arena int `json:"arena"`
 }
 
 type MatchBegan struct {
@@ -124,7 +126,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			json.Unmarshal(msg.Payload, &res)
 			if res.X == "1v1" {
 				m, err := w.dummyMatch()
-				if err != nil { log.Fatal("%v", err) }
+				if err != nil { log.Fatalf("%v", err) }
 				go w.sendReadyUpPrompt(m)
 			} else if res.X == "1v_" {
 				m := &Match{
@@ -179,8 +181,11 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				continue
 			}
 			//TODO: Send cancellation signal to users
-			sv := conn.object.(*gameServer)
+			sv := conn.h.connections[conn].(*gameServer)
 			matchIndex := sv.findMatchByPlayer(res.Delinquents[0])
+			for _, player := range sv.Matches[matchIndex].players {
+				player.Connection.sendJSON <- msg
+			}
 			sv.deleteMatch(matchIndex)
 		} else {
 			return fmt.Errorf("Unknown message type: %s", msg.Type)

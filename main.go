@@ -126,8 +126,12 @@ func main() {
 	})
 
 	rout.GET("/queue", func(c *gin.Context) {
-		_, loggedin := c.Get("User")
-		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin})
+		usr, loggedin := c.Get("User")
+		var id string
+		if loggedin {
+			id = usr.(User).id
+		}
+		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id})
 	})
 	
 	content, err := ioutil.ReadFile("./DbCfg.json")
@@ -376,11 +380,27 @@ func (s *gameServer) findMatchByPlayer(id string) (int) {
 	return -1
 }
 
-func (s *gameServer) deleteMatch(id int) {
-	s.Matches = append(s.Matches[:id], s.Matches[id+1])
+func (s *gameServer) deleteMatch(ind int) error {
+	if ind >= len(s.Matches) {
+		return fmt.Errorf("Index out of bounds")
+	}
+	if len(s.Matches) < 1 {
+		return fmt.Errorf("Can't delete from empty match slice")
+	} else if len(s.Matches) > 1 {
+		if ind < len(s.Matches)-1 {
+			s.Matches = append(s.Matches[:ind], s.Matches[ind+1:]...)
+		} else if ind == len(s.Matches)-1 { //ind = len(s.Matches) Deleting last item off the slice
+			s.Matches = s.Matches[:ind]
+		} else {
+			return fmt.Errorf("Huh? Logic should be exhaustive here. Bad bounds logic.")
+		}
+	} else if len(s.Matches) == 1 {
+		s.Matches = make([]*Match, 0)
+	}
 	//There are many ways in Go to remove something from a slice, but here I use the re-slicing method to avoid leaving nil spots in my slice
 	//This is relatively expensive but I think it should be better than having to resize my slice to 1,000 objects, mostly nil, if I have 1,000 matches over 15 days of time.
-	log.Printf("Deleting match idx %d from server %s\n", id, s.Info.Id)
+	log.Printf("Deleting match idx %d from server %s\n", ind, s.Info.Id)
+	return nil
 }
 
 type matchServerInfo struct { //Just the stuff users need to know

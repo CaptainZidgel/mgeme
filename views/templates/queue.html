@@ -13,11 +13,11 @@
 	</div>
 		
 	<div id="matchDetails" v-if="matchDetails != null">
-		<div v-if="matchDetails.deadline > epoch()">
+		<div v-if="matchDetails.deadline > epoch">
 			<p>You're in a match</p>
 			<p>{{"{{matchDetails.p1Id}}"}} vs {{"{{matchDetails.p2Id}}"}}</p>
 			<p>connect {{"{{matchDetails.gameServer.ip}}"}}:{{"{{matchDetails.gameServer.port}}"}}; password 2p2j</p>
-			<p>You have {{"{{matchDetails.deadline - epoch()}}"}} seconds left to connect!
+			<p>You have {{"{{connectTimeLeft}}"}} seconds left to connect!
 		</div>
 		<div v-else>
 			<p>You have failed to appear for your court date. Shame, shame on you.</p>
@@ -68,17 +68,25 @@ const app = Vue.createApp({
 			},
 			rupTimer: null,
 			rupTimeLeft: 0,
+			connectTimer: null,
+			connectTimeLeft: 0,
 			matchDetails: null,
 			serviceStatus: {
 				status: 0,
 				code: null,
 				msg: null,
-			}
+			},
+			steamid: null, 
+			//Steamid is inherited from the gin template. Sessions are held in server and can't be read by clients (good!). 
+			//However I want to use it sometimes. However a bad actor could change their client data.
+			// So use this variable for some non-important purposes but never send it to the server (the server should use sessions)
 		}
 	},
 	mounted() { //lifecycle hook 
-		console.log("Mounting", this)
-		this.socket = new WebSocket("ws://{{.wsHost}}:{{.wsPort}}/websock")
+		if (this.loggedIn) {
+			this.socket = new WebSocket("ws://{{.wsHost}}:{{.wsPort}}/websock")
+			this.steamid = {{.steamid}}
+		}
 		this.socket.onopen = () => console.log("ws Connection established")
 		this.socket.onclose = function(event) {
 			if (event.wasClean) {
@@ -110,6 +118,15 @@ const app = Vue.createApp({
 				}
 			} else if (data.type == "MatchDetails") {
 				this.matchDetails = data
+				this.connectTimeLeft = 180
+				this.connectTimer = setInterval(() => {
+					this.updateConnectTimeLeft()
+				}, 1000)
+			} else if (data.type == "MatchCancel") {
+				delinq = data.payload.delinquents
+				if (delinq.includes(this.steamid)) {
+					this.matchDetails.deadline = 0
+				}
 			} else if (data.type == "ServerIssue") {
 				let code = data.code
 				let level = parseInt(code.toString()[0])
@@ -132,7 +149,7 @@ const app = Vue.createApp({
 			return Math.floor(Date.now() / 1000)
 		},
 		updateRupTimeLeft() {
-			let now = epoch()
+			let now = this.epoch()
 			let expire = this.rupStatus.expireAt
 			console.log("t:", now, expire)
 			if (expire < now) {
@@ -141,6 +158,15 @@ const app = Vue.createApp({
 				clearInterval(this.rupTimer)
 			} else {
 				this.rupTimeLeft = expire - now
+			}
+		},
+		updateConnectTimeLeft() {
+			let now = this.epoch()
+			let expire = this.matchDetails.deadline
+			if (expire - now == 0) {
+				clearInterval(this.connectTimer)
+			} else {
+				this.connectTimeLeft = expire - now
 			}
 		},
 		joinLeaveQueue(joining) {
