@@ -16,6 +16,7 @@ import (
 	"database/sql"
 	"github.com/go-sql-driver/mysql"
 	"github.com/leighmacdonald/steamid/v2/steamid"
+	"github.com/leighmacdonald/steamweb"
 	"io/ioutil"
 	"encoding/json"
 	"net"
@@ -27,6 +28,13 @@ import (
 type User struct {
 	id string
 	elo int
+	summary steamweb.PlayerSummary
+	Nickname string
+	Avatar struct {
+		Small string
+		Medium string
+		Full string
+	}
 }
 
 //a Json object for loading your sql configuration. The fields are just named user, pass, addr, dbName
@@ -37,6 +45,18 @@ type sqlConfig struct {
 	DbName string
 }
 
+func singleSummary(id string) (steamweb.PlayerSummary, error) {
+	sid, err := steamid.StringToSID64(id)
+	if err != nil {
+		return steamweb.PlayerSummary{}, err
+	}
+	sums, err := steamweb.PlayerSummaries([]steamid.SID64{sid})
+	if err != nil {
+		return steamweb.PlayerSummary{}, err
+	}
+	return sums[0], err
+}
+
 func GetUser() gin.HandlerFunc { //middleware to set contextual variable from session
 	return func(c *gin.Context) {
 		var user User
@@ -44,8 +64,19 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 		if id := session.Get("steamid"); id != nil {
 			user.id = id.(string)
 			user.elo = GetElo(user.id)
-			c.Set("User", user)
 			log.Println("Authorizing user with steamid", user.id)
+			summary, err := singleSummary(user.id)
+			if err != nil {
+				log.Printf("Error getting user summary for id %d : %v\n", user.id, err)
+			} else {
+				//log.Printf("Got summary %v\n", summary)
+				user.summary = summary
+				user.Nickname = summary.PersonaName
+				user.Avatar.Small = summary.Avatar
+				user.Avatar.Medium = summary.AvatarMedium
+				user.Avatar.Full = summary.AvatarFull
+			}
+			c.Set("User", user)
 		} else {
 			log.Println("session steamid was nil, not authorizing")
 		}
@@ -131,7 +162,7 @@ func main() {
 		if loggedin {
 			id = usr.(User).id
 		}
-		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id})
+		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
 	})
 	
 	content, err := ioutil.ReadFile("./DbCfg.json")
@@ -240,6 +271,7 @@ func GetElo(steam64 string) (int) {
 
 type PlayerAdded struct {
 	Connection *connection
+	User User
 	Steamid string
 	Elo int
 	WaitingSince time.Time
@@ -334,7 +366,8 @@ func (w *webServer) resolveConnectingUser(conn *connection) {
 func (w *webServer) queueUpdate(joining bool, conn *connection) { //The individual act of joining/leaving the queue. Should be followed by SendQueueToClients
 	steamid := conn.id
 	if joining { //add to queue
-			w.gameQueue[steamid] = PlayerAdded{Connection: conn, Steamid: steamid, Elo: GetElo(conn.id), WaitingSince: time.Now()}//steamid//lol
+			user := w.playerHub.connections[conn].(User)
+			w.gameQueue[steamid] = PlayerAdded{Connection: conn, User: user, Steamid: steamid, Elo: GetElo(conn.id), WaitingSince: time.Now()}//steamid//lol
 			log.Println("Adding to queue")
 	} else { //remove from queue
 			delete(w.gameQueue, steamid) //remove steamid from gamequeue
@@ -606,7 +639,10 @@ func (w *webServer) removePlayersFromQueue(players []PlayerAdded) {
 }
 
 func NewFakeConnection() *connection {
-	return &connection{playerReady: make(chan bool, 8)}
+	return &connection{
+		playerReady: make(chan bool, 9999),
+		sendJSON: make(chan interface{}, 9999),
+	}
 }
 
 /*

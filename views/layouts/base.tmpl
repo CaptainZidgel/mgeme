@@ -1,6 +1,17 @@
 <html>
 <body>
+{{if .loggedIn}}
+<div id="header">
+	<span style="float: right">Hi, {{.user.Nickname}}!</span>
+</div>
+{{end}}
 {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
 {{template "content" . }}
 </body>
+<style>
+	#header {
+		width: 100%;
+		background-color: gray;
+	}
+</style>
 </html>

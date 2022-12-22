@@ -13,7 +13,7 @@
 	</div>
 		
 	<div id="matchDetails" v-if="matchDetails != null">
-		<div v-if="matchDetails.deadline > epoch">
+		<div v-if="matchDetails.alive">
 			<p>You're in a match</p>
 			<p>{{"{{matchDetails.p1Id}}"}} vs {{"{{matchDetails.p2Id}}"}}</p>
 			<p>connect {{"{{matchDetails.gameServer.ip}}"}}:{{"{{matchDetails.gameServer.port}}"}}; password 2p2j</p>
@@ -44,8 +44,8 @@
 	</div>
 	<h2>Queue</h2>
 	<ul>
-		<li v-for="value of serverQueue">
-			{{"{{value}}"}}
+		<li v-for="value in serverQueue">
+			{{"{{value.Steamid}}"}} :  {{"{{value.User.Nickname}}"}}
 		</li>
 	</ul>
 </div>
@@ -103,7 +103,7 @@ const app = Vue.createApp({
 			if (data.type == "AckQueue") { //{type: "AckQueue", queue: {steamids: {queue info}} the queue map will eventually be changed to a list
 				let ids = Object.keys(data.queue) //this line should become deprecated before production, i.e. let ids = data.queue
 				this.inQueue = data.isInQueue
-				this.serverQueue = ids
+				this.serverQueue = data.queue
 			} else if (data.type == "RupSignal") {
 				let show = data.showPrompt
 				this.rupStatus.showPrompt = show
@@ -118,14 +118,16 @@ const app = Vue.createApp({
 				}
 			} else if (data.type == "MatchDetails") {
 				this.matchDetails = data
+				this.matchDetails.alive = true
 				this.connectTimeLeft = 180
 				this.connectTimer = setInterval(() => {
 					this.updateConnectTimeLeft()
 				}, 1000)
 			} else if (data.type == "MatchCancel") {
 				delinq = data.payload.delinquents
+				this.matchDetails.alive = false
 				if (delinq.includes(this.steamid)) {
-					this.matchDetails.deadline = 0
+					return
 				}
 			} else if (data.type == "ServerIssue") {
 				let code = data.code
@@ -163,7 +165,7 @@ const app = Vue.createApp({
 		updateConnectTimeLeft() {
 			let now = this.epoch()
 			let expire = this.matchDetails.deadline
-			if (expire - now == 0) {
+			if (expire - now <= 0) {
 				clearInterval(this.connectTimer)
 			} else {
 				this.connectTimeLeft = expire - now

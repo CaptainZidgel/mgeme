@@ -45,7 +45,7 @@ type ServerHelloWorld struct { //Comes from gameserver to initialize connections
 type MatchResults struct {
 	Winner string `json:"winner"`
 	Loser string `json:"loser"`
-	FinishMode string `json:"finishMode"`
+	Finished string `json:"finished"` //true = normal finish, false = forfeit
 }
 
 type MatchCancel struct {
@@ -72,6 +72,25 @@ type AckQueue struct {
 func NewAckQueueMsg (queue PlayerEntries, id string) AckQueue {
 	_, ok := queue[id]
 	return AckQueue{Type: "AckQueue", Queue: queue, IsInQueue: ok}
+}
+
+//Sent to server on connect
+type ServerAck struct {
+	Type string `json:"type"`
+	Accept bool `json:"accepted"`
+	RejectReason string `json:"rejectReason"`
+}
+
+func newServerAck(rejectReason string) ServerAck {
+	s := ServerAck{}
+	s.Type = "ServerAck"
+	if rejectReason == "" {
+		s.Accept = true
+	} else {
+		s.Accept = false
+		s.RejectReason = rejectReason
+	}
+	return s
 }
 
 type HelloWorld struct {
@@ -160,33 +179,42 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				Matches: make([]*Match, 0),
 			}
 			conn.h.connections[conn] = gs
+			conn.sendJSON <- newServerAck("") //Let the server know we accepted the connection
+			//TODO: Implement API keying to guarantee game servers are permitted agents. Reject with conn.sendJSON <- newServerAck("Bad API Key")
 		} else if msg.Type == "MatchResults" {
 			var res MatchResults
 			err := json.Unmarshal(msg.Payload, &res)
 			if err != nil {
-				fmt.Println("Error unmarshaling MatchResults", err.Error(), "|", string(msg.Payload))
+				return fmt.Errorf("Error unmarshaling MatchResults %v", err)
 			}
 			//do something
-			winner := res.Winner
-			loser := res.Loser
-			fmt.Printf("Received MatchResults from Server %s : Winner %s , Loser %s ^ Finish Mode %s/n", conn.id, winner, loser, res.FinishMode)
+			fmt.Printf("Received MatchResults from Server %v, finish Mode %t", res, res.Finished)
 		} else if msg.Type == "MatchCancel" {
 			var res MatchCancel
 			err := json.Unmarshal(msg.Payload, &res)
 			if err != nil {
 				fmt.Println("Error unmarshaling MatchCancel", err.Error(), "|", string(msg.Payload))
 			}
-			for _ = range res.Delinquents {
+			fmt.Printf("Received matchcancel %v\n", res)
+			//for _ = range res.Delinquents {
 				//TODO: Punish(id)
-				continue
-			}
-			//TODO: Send cancellation signal to users
+			//	continue
+			//}
 			sv := conn.h.connections[conn].(*gameServer)
 			matchIndex := sv.findMatchByPlayer(res.Delinquents[0])
+			if matchIndex == -1 {
+				fmt.Println("Couldn't find match with player in it", res.Delinquents[0])
+				return nil
+			} else {
+				fmt.Println("Abandonment in match index", matchIndex)
+			}
 			for _, player := range sv.Matches[matchIndex].players {
 				player.Connection.sendJSON <- msg
 			}
-			sv.deleteMatch(matchIndex)
+			err = sv.deleteMatch(matchIndex)
+			if err != nil {
+				log.Fatalf("Err deleting match: %v", err)
+			}
 		} else {
 			return fmt.Errorf("Unknown message type: %s", msg.Type)
 		}

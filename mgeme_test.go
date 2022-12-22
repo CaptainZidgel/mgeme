@@ -99,7 +99,12 @@ func createUserAndServerConns(handler http.Handler, t *testing.T) (*websocket.Co
 		t.Fatalf("Error dialing user endpoint %v", err)
 	}
 	
-	gameConn.WriteJSON(WrapMessage("ServerHello", ServerHelloWorld{ServerNum: "1", ServerHost: "FakeHost"}, t))
+	err = gameConn.WriteJSON(WrapMessage("ServerHello", ServerHelloWorld{ServerNum: "1", ServerHost: "FakeHost"}, t))
+	if err != nil {
+		t.Fatalf("Error writing server-hello %v", err)
+	}
+	_ = readWaitFor(gameConn, "ServerAck", t, false)
+	t.Log("Gameconn acknowledged")
 	return userConn, gameConn, server
 }
 
@@ -328,6 +333,58 @@ func TestReadyUpMismatch(t *testing.T) {
 		json.Unmarshal(msg, &md)
 	}()
 }*/
+
+func TestDelinquency(t *testing.T) {
+	mgeme := newWebServer()
+	mgeme.playerHub.addConnection(&connection{
+		id: "B",
+		sendJSON: make(chan interface{}, 1024),
+	})
+	sv := createServerHandler(
+		mgeme,
+		defaultErrHandler,
+		t,
+		setDefaultId("A"),
+		GetUser(),
+	)
+
+	userConn, gameConn, server := createUserAndServerConns(sv, t)
+	defer userConn.Close()
+	defer gameConn.Close()
+	defer server.Close()
+
+	gc, obj := mgeme.gameServerHub.findConnection("1")
+	if gc == nil {
+		t.Fatal("No game server connection found")
+	}
+	gsv := obj.(*gameServer)
+
+	A, _ := mgeme.playerHub.findConnection("A")
+	B, _ := mgeme.playerHub.findConnection("B")
+
+	match := createMatchObject([]PlayerAdded{
+		PlayerAdded{Connection: A, Steamid: "A"}, PlayerAdded{Connection: B, Steamid: "B"},
+	})
+	go mgeme.initializeMatch(match)
+
+	_ = readWaitFor(gameConn, "MatchDetails", t, false)
+	if len(gsv.Matches) != 1 {
+		t.Fatalf("Have %d matches instead of 1", len(gsv.Matches))
+	}
+
+	msg := WrapMessage("MatchCancel", MatchCancel{
+		Delinquents: []string{"A"},
+		Arrived: "2",
+		Arena: 1,
+	}, t)
+	mgeme.HandleMessage(msg, gc.id, gc)
+	
+	tmr := time.NewTimer(1 * time.Second)
+	<-tmr.C
+	if len(gsv.Matches) > 0 {
+		t.Fatalf("Didn't delete match")
+	}
+}
 
 func TestDeleteMatch(t *testing.T) {
 	gs := &gameServer{Matches: make([]*Match, 0)}
