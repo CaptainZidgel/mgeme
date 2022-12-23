@@ -45,10 +45,10 @@ type ServerHelloWorld struct { //Comes from gameserver to initialize connections
 type MatchResults struct {
 	Winner string `json:"winner"`
 	Loser string `json:"loser"`
-	Finished string `json:"finished"` //true = normal finish, false = forfeit
+	Finished bool `json:"finished"` //true = normal finish, false = forfeit
 }
 
-type MatchCancel struct {
+type MatchCancel struct { //called when match is cancelled **before beginning**
 	Delinquents []string `json:"delinquents"`
 	Arrived string `json:"arrived"`
 	Arena int `json:"arena"`
@@ -188,6 +188,14 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				return fmt.Errorf("Error unmarshaling MatchResults %v", err)
 			}
 			//do something
+			if !res.Finished { //forfeit (punish "res.Loser")
+				_ = true	
+			}
+			sv := conn.h.connections[conn].(*gameServer)
+			matchIndex := sv.findMatchByPlayer(res.Winner)
+			for _, player := range sv.Matches[matchIndex].players {
+				player.Connection.sendJSON <- msg
+			}
 			fmt.Printf("Received MatchResults from Server %v, finish Mode %t", res, res.Finished)
 		} else if msg.Type == "MatchCancel" {
 			var res MatchCancel
