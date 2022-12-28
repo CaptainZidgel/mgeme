@@ -1,5 +1,5 @@
 *.json
 go.sum
-*.exe #Windows executable
-mgeme #Linux executable
+*.exe
+mgeme
 *.swp

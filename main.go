@@ -23,6 +23,7 @@ import (
 	"strings"
 	"errors"
 	"flag"
+	"math/rand"
 )
 
 type User struct {
@@ -377,20 +378,6 @@ func (w *webServer) queueUpdate(joining bool, conn *connection) { //The individu
 	w.sendQueueToClients()
 }
 
-/*
-func AddPlayersTest(seed int64, maxplayers int, hub *Hub) {
-	rand.Seed(seed)
-	i := rand.Intn(maxplayers+1) + 3
-	for n := 0; n < i; n++ {
-		GameQueue[fmt.Sprintf("%d", n)] = PlayerAdded{
-			Connection: &connection{id: "FakePlayer", sendText: nil, sendJSON: nil, h: hub}, 
-			Steamid: fmt.Sprintf("%d", n), 
-			Elo: rand.Intn(2000) + 1000, 
-			WaitingSince: time.Now().Add(time.Second * -time.Duration(rand.Intn(120) + 1)),	//subtracts a random amount of seconds from the current time
-		}
-	}
-}*/
-
 func (w *webServer) sendQueueToClients() {
 	for c := range w.playerHub.connections {
 		c.sendJSON <- NewAckQueueMsg(w.gameQueue, c.id) //send a personalized ack out to each client, including confirmation that they're still inqueue
@@ -398,8 +385,9 @@ func (w *webServer) sendQueueToClients() {
 }
 
 type gameServer struct { //The stuff the webserver will want to know, doesn't necessarily have info like the IP as that isn't necessary.
-	Matches []*Match
+	Matches map[int]*Match //Arena Index to Match. I used a map instead of a slide because not all arenas are used and I found using a slice in this manner too confusing. I kept confusing the slice index and the arena index.
 	Info matchServerInfo
+	Full bool //Can we fit more players into these arenas?
 }
 
 //Find what match contains a certain player (since players can only be in one match at a time, it should be sufficient to only pass one player)
@@ -413,26 +401,32 @@ func (s *gameServer) findMatchByPlayer(id string) (int) {
 	return -1
 }
 
-func (s *gameServer) deleteMatch(ind int) error {
-	if ind >= len(s.Matches) {
-		return fmt.Errorf("Index out of bounds")
+func (s *gameServer) deleteMatch(ind int) {
+	delete(s.Matches, ind)
+}
+
+//gamemaps
+var mgeTrainingV8Arenas = []int{1, 2, 3, 4, 5, 6, 8, 10}
+
+func (s *gameServer) assignArena(m *Match, gamemap []int) error {
+	if s.Full {
+		return fmt.Errorf("No room in this server")
 	}
-	if len(s.Matches) < 1 {
-		return fmt.Errorf("Can't delete from empty match slice")
-	} else if len(s.Matches) > 1 {
-		if ind < len(s.Matches)-1 {
-			s.Matches = append(s.Matches[:ind], s.Matches[ind+1:]...)
-		} else if ind == len(s.Matches)-1 { //ind = len(s.Matches) Deleting last item off the slice
-			s.Matches = s.Matches[:ind]
-		} else {
-			return fmt.Errorf("Huh? Logic should be exhaustive here. Bad bounds logic.")
-		}
-	} else if len(s.Matches) == 1 {
-		s.Matches = make([]*Match, 0)
+	rand_index := rand.Perm(len(gamemap)) //create a slice of n ints from 0 to n-1 so we can get a random arena and check them all for matches eventually
+	for i, idx := range rand_index {
+		arena_index := gamemap[idx]
+		x, ok := s.Matches[arena_index]//x: a pointer to a match or nil, and if that value is defined.
+		if (ok && x != nil) { //"ok" will be true if x is defined as nil, since it could be a pointer
+			if (i == len(gamemap) - 1) {
+				s.Full = true
+				return fmt.Errorf("No room in this server") //Hopefully I won't be stupid enough to call this function on a full server but if I am, I covered my bases.
+			} else {
+				continue
+			}
+		} //if undefined or defined as nil, the arena is free
+		s.Matches[arena_index] = m
+		return nil
 	}
-	//There are many ways in Go to remove something from a slice, but here I use the re-slicing method to avoid leaving nil spots in my slice
-	//This is relatively expensive but I think it should be better than having to resize my slice to 1,000 objects, mostly nil, if I have 1,000 matches over 15 days of time.
-	log.Printf("Deleting match idx %d from server %s\n", ind, s.Info.Id)
 	return nil
 }
 
@@ -482,7 +476,10 @@ func (w *webServer) initializeMatch(m *Match) {
 	m.ConnectDeadline = time.Now().Add(time.Second * 180).Unix()
 	
 	sv := obj.(*gameServer) //get server object
-	sv.Matches = append(sv.Matches, m) //Adds the match to the webserver's records for this server
+	err := sv.assignArena(m, mgeTrainingV8Arenas)
+	if err != nil {
+		log.Fatalf("this server is full. How could you do this.")
+	}
 	
 	c.sendJSON <- m //Sends match details to the gameserver (sourcemod)
 	for _, player := range m.players {
@@ -531,6 +528,24 @@ func (w *webServer) fillPlayerSlice(num int, fallback bool) ([]PlayerAdded, erro
 									Leave unready players out of queue
 */
 
+//Going to have to table this functionality until closer to production
+func (w *webServer) getFreeServer() string {
+	//Our servers are stored in a map by their connections as keys. Sort this out so we fill servers in order.
+	//I am drowning in technical debt and my children will inherit it
+	return "1"
+	/*
+	i := 0
+	for i < len(w.gameServerHub) {
+		id := strconv.Itoa(i)
+		conn, sv := w.findConnection(id)
+		if !sv.Full {
+			return id
+		}
+		i = i + 1
+	}
+	*/
+}
+
 func (w *webServer) dummyMatch() (*Match, error) { //change string to SteamID2 type?
 	players, err := w.fillPlayerSlice(2, false)
 	if err != nil {
@@ -538,18 +553,16 @@ func (w *webServer) dummyMatch() (*Match, error) { //change string to SteamID2 t
 	}
 	log.Println("Received fill slice: ", players)
 	
+	id := w.getFreeServer()
 	//remove players from queue, update queue for all players
 	w.removePlayersFromQueue(players)
-	return createMatchObject(players), nil
+	return createMatchObject(players, id), nil
 }
 
-func createMatchObject(players []PlayerAdded) *Match {
+func createMatchObject(players []PlayerAdded, server string) *Match { //gonna leave server as a param here so I can assign earlier and not return an error here
 	log.Println("Matching together", players[0].Steamid, players[1].Steamid)
-	server := "1" //TODO: SelectServer() function if I scale out to multiple servers. I'm keeping server as a string for now in case I want to identify servers in another way.
-	arena := 1 // Random. TODO: Selection.
 	return &Match{
 		ServerId: server, 
-		Arena: arena, 
 		Configuration: make(map[string]string), 
 		P1id: players[0].Steamid,
 		P2id: players[1].Steamid,
@@ -626,7 +639,7 @@ func (w *webServer) clearAllMatches() {
 				w.gameQueue[p.Connection.id] = p //Not using QueueUpdate, as to avoid sending a queue message for every player. Waiting until after.
 			}
 		}
-		server.Matches = make([]*Match, 0)
+		server.Matches = make(map[int]*Match)
 	}
 	w.sendQueueToClients()
 }
@@ -644,18 +657,3 @@ func NewFakeConnection() *connection {
 		sendJSON: make(chan interface{}, 9999),
 	}
 }
-
-/*
-func DummyMatchAll(hub *Hub) { //Just put 2 players together with no rhyme or reason.
-	keys := make([]string, 0)
-	for k, _ := range GameQueue {
-		keys = append(keys, k)
-	}
-	if len(keys) % 2 != 0 { //We only match an even amount of players
-		keys = keys[0:len(keys)-1]
-	}
-	for i := 1; i < len(keys) - 1; i += 2{
-		DummyMatch(keys[i], keys[i+1], hub)
-	}
-}
-*/

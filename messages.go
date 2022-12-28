@@ -176,7 +176,8 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 					Port: res.ServerPort,
 					Stv: res.StvPort,
 				},
-				Matches: make([]*Match, 0),
+				Matches: make(map[int]*Match),
+				Full: false,
 			}
 			conn.h.connections[conn] = gs
 			conn.sendJSON <- newServerAck("") //Let the server know we accepted the connection
@@ -196,6 +197,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			for _, player := range sv.Matches[matchIndex].players {
 				player.Connection.sendJSON <- msg
 			}
+			sv.deleteMatch(matchIndex)
 			fmt.Printf("Received MatchResults from Server %v, finish Mode %t", res, res.Finished)
 		} else if msg.Type == "MatchCancel" {
 			var res MatchCancel
@@ -219,10 +221,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			for _, player := range sv.Matches[matchIndex].players {
 				player.Connection.sendJSON <- msg
 			}
-			err = sv.deleteMatch(matchIndex)
-			if err != nil {
-				log.Fatalf("Err deleting match: %v", err)
-			}
+			sv.deleteMatch(matchIndex)
 		} else {
 			return fmt.Errorf("Unknown message type: %s", msg.Type)
 		}

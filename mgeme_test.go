@@ -386,74 +386,9 @@ func TestDelinquency(t *testing.T) {
 	}
 }
 
-func TestDeleteMatch(t *testing.T) {
-	gs := &gameServer{Matches: make([]*Match, 0)}
-	
-	//Deleting when empty should err
-	err := gs.deleteMatch(0)
-	if err == nil {
-		t.Fatalf("Delete match should error when index out of bounds (len: 0)")
-	}
-
-	//Add (1) => Total (1)
-	gs.Matches = append(gs.Matches, &Match{})
-	//Deleting out of bounds should err
-	err = gs.deleteMatch(10)
-	if err == nil {
-		t.Fatalf("Delete match should error when index out of bounds (len: 1)")
-	}
-
-	//Deleting last item should not err (len = 1)		Del (1) => Total (0)
-	err = gs.deleteMatch(0)
-	if err != nil {
-		t.Fatalf("Should not have received err %v deleting last item (len = 1)", err)
-	}
-	if len(gs.Matches) != 0 {
-		t.Fatalf("Should only have 0 matches in the object here, have %d", len(gs.Matches))
-	}
-
-	//Set at (2) => Total (2)
-	gs.Matches = []*Match{&Match{}, &Match{}}
-	//Deleting last item should not err (len = 2; depending on method used for deletion, the length of the slices could indeed be differing cases)
-	err = gs.deleteMatch(1)		//Del (1) => Total (1)
-	if err != nil {
-		t.Fatalf("Should not have received err %v deleting last item (len = 2)", err)
-	}
-	if len(gs.Matches) != 1 {
-		t.Fatalf("Should only have 1 matches in the object here, have %d", len(gs.Matches))
-	}
-
-	//Reset slice
-	gs.Matches = make([]*Match, 0)
-	//Add (10) => Total (10)
-	for i := 0; i < 10; i++ {
-		gs.Matches = append(gs.Matches, &Match{Arena: i}) //Borrow the arena field as a quick way to identify each match
-	}
-	if len(gs.Matches) != 10 {
-		t.Fatalf("Should only have 10 matches in the object here, have %d", len(gs.Matches))
-	}
-
-	//Deleting the last item should not err (len > 2)	Del (1) => Total (9)
-	err = gs.deleteMatch(9)
-	if err != nil {
-		t.Fatalf("Should not have received err %v deleting last item (len > 2)", err)
-	}
-	if len(gs.Matches) != 9 {
-		t.Fatalf("Should only have 9 matches here, have %d", len(gs.Matches))
-	}
-
-	//Deleting from the middle of a large queue should not err	Del (1) => Total (8)
-	err = gs.deleteMatch(4)
-	if err != nil {
-		t.Fatalf("Should not have received err %v deleting in middle of slice", err)
-	}
-	for index, match := range gs.Matches {
-		t.Logf("%d , %d", index, match.Arena)
-		if match.Arena == 4 {
-			t.Fatalf("The 5th match (index 4) should have been deleted. It exists at index %d", index)
-		}
-	}
-	if len(gs.Matches) != 8 {
-		t.Fatalf("Should only have 8 matches here, have %d", len(gs.Matches))
+//TODO
+func TestAssignArena(t *testing.T) {
+	gs := &gameServer{matchServerInfo{
+		Id: "1"
 	}
 }
