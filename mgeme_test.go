@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 	"encoding/json"
+	"github.com/stretchr/testify/assert"
 )
 
 func makeWsURL(server *httptest.Server, endpoint string) string {
@@ -334,6 +335,43 @@ func TestReadyUpMismatch(t *testing.T) {
 	}()
 }*/
 
+func TestUpdateBanLevel(t *testing.T) {
+	updateBanMethod = updateBanMock
+	//The penalize package should call `now` when it wants time.Now(), here it will return whatever value we set testNow to.
+	var testNow = time.Now()
+	now = func() time.Time {
+		return testNow
+	}
+
+	b := createBan("myId", true)
+	assert.Equal(t, 0, b.banLevel, "ban levels should start at 0")
+	assert.Equal(t, now().Add(expireLadder[0]), b.expires, "expire should be equal to first ban level (idx 0)")
+
+	testNow = testNow.Add(1 * dayDur)
+	b.newPenalty()
+	assert.Equal(t, 1, b.banLevel, "ban level should have increased by 1")
+	assert.Equal(t, now().Add(expireLadder[1]), b.expires, "expire should be equal to second ban level (idx 1)")
+
+	testNow = now().Add(9 * dayDur)
+	b.newPenalty()	//First, set level according to time passed since last offence. Then increase by 1. (We should go to 0 then back to 1)
+	assert.Equal(t, 0, b.banLevel, "ban level should have gone to 0")
+	assert.Equal(t, now().Add(expireLadder[0]), b.expires, "expire should be equal to first ban level (idx 0)")
+	
+	b.newPenalty()
+	b.newPenalty()
+	b.newPenalty()
+	assert.Equal(t, 3, b.banLevel, "ban level should be 3")
+	assert.Equal(t, now().Add(expireLadder[3]), b.expires, "expire should be equal to fourth ban level (idx 3)")
+	
+	testNow = now().Add(2 * weekDur)
+	b.newPenalty()
+	assert.Equal(t, 1, b.banLevel, "ban level should be at 3 - 2 = 1")
+	assert.Equal(t, now().Add(expireLadder[1]), b.expires, "expire should be equal to second ban level (idx 2)")
+	
+	testNow = now().Add(1 * weekDur)
+	assert.Equal(t, b.isActive(), false, "ban should be expired")
+}
+
 func TestDelinquency(t *testing.T) {
 	mgeme := newWebServer()
 	mgeme.playerHub.addConnection(&connection{
@@ -364,7 +402,7 @@ func TestDelinquency(t *testing.T) {
 
 	match := createMatchObject([]PlayerAdded{
 		PlayerAdded{Connection: A, Steamid: "A"}, PlayerAdded{Connection: B, Steamid: "B"},
-	})
+	}, "1")
 	go mgeme.initializeMatch(match)
 
 	_ = readWaitFor(gameConn, "MatchDetails", t, false)
@@ -387,8 +425,12 @@ func TestDelinquency(t *testing.T) {
 }
 
 //TODO
+/*
 func TestAssignArena(t *testing.T) {
-	gs := &gameServer{matchServerInfo{
-		Id: "1"
+	gs := &gameServer{
+		matchServerInfo{
+			Id: "1",
+		},
 	}
 }
+*/

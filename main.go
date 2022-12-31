@@ -17,13 +17,13 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/leighmacdonald/steamid/v2/steamid"
 	"github.com/leighmacdonald/steamweb"
-	"io/ioutil"
 	"encoding/json"
 	"net"
 	"strings"
 	"errors"
 	"flag"
 	"math/rand"
+	"os"
 )
 
 type User struct {
@@ -68,7 +68,7 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 			log.Println("Authorizing user with steamid", user.id)
 			summary, err := singleSummary(user.id)
 			if err != nil {
-				log.Printf("Error getting user summary for id %d : %v\n", user.id, err)
+				log.Printf("Error getting user summary for id %s : %v\n", user.id, err)
 			} else {
 				//log.Printf("Got summary %v\n", summary)
 				user.summary = summary
@@ -83,8 +83,6 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 		}
 	}
 } //this is fairly superfluous at this point but if i build out the User type I will want to add stuff here probably
-
-var SelectElo *sql.Stmt
 
 type webServer struct{
 	gameServerHub *Hub
@@ -104,6 +102,8 @@ func newWebServer() *webServer {
 	return &web
 }
 
+var db *sql.DB
+var SelectElo *sql.Stmt
 func main() {
 	wsHostPtr := flag.String("addr", getOutboundIp(), "Address to listen on (Relayed to clients to know where to send messages to, ie 'localhost' on windows)")
 	portPtr := flag.String("port", "8080", "Port to listen on")
@@ -133,9 +133,13 @@ func main() {
 
 	rout.GET("/logout", func(c *gin.Context) {
 		session := sessions.Default(c)
+		sid := session.Get("steamid") //get for error checking only
 		session.Set("steamid", nil)
-		session.Save()
-
+		err := session.Save()
+		if err != nil {
+			log.Fatalf("Err saving session for user %s: %v", sid, err) 
+		}
+		
 		c.Redirect(302, "/")
 	})
 
@@ -166,7 +170,7 @@ func main() {
 		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
 	})
 	
-	content, err := ioutil.ReadFile("./DbCfg.json")
+	content, err := os.ReadFile("./DbCfg.json")
 	if err != nil { log.Fatal("Error opening database config: ", err) }
 	var conf sqlConfig
 	err = json.Unmarshal(content, &conf)
@@ -182,10 +186,21 @@ func main() {
 	if err != nil { log.Fatal("Error connecting to sql: ", err) }
 	defer db.Close()
 	
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS bans(steam64 TEXT NOT NULL, expires BIGINT NOT NULL, level INT, lastOffence BIGINT)")
+	if err != nil { log.Fatal(err) }
+	
 	SelectElo, err = db.Prepare("SELECT rating FROM mgemod_stats WHERE steamid = ?")
 	if err != nil { log.Fatal(err) }
 	defer SelectElo.Close()
-
+	SelectBan, err = db.Prepare("SELECT expires, level, lastOffence FROM bans WHERE steam64 = ?")
+	if err != nil { log.Fatal(err) }
+	defer SelectBan.Close()
+	
+	UpdateBan, err = db.Prepare("INSERT INTO bans (steam64, expires, level, lastOffence) VALUES(?, ?, ?, ?) ON DUPLICATE KEY UPDATE expires=VALUES(expires), level=VALUES(level), lastOffence=VALUES(lastOffence)")
+	if err != nil { log.Fatal(err) }
+	defer UpdateBan.Close()
+	updateBanMethod = updateBanSql
+	
 	//AddPlayersTest(118, 14, userHub)
 	mgeme.sendQueueToClients()
 	rout.Run(*wsHostPtr + ":" + *portPtr)
@@ -222,7 +237,10 @@ func loginSteam(c *gin.Context) {
 
 			session := sessions.Default(c)
 			session.Set("steamid", steamId)
-			session.Save()
+			err = session.Save()
+			if err != nil {
+				log.Fatalf("Error setting steamid session for user %s: %v", steamId, err)
+			}
 
 			//parse original request (r) to see if there was a specific redirect param
 			redir := r.FormValue("redirect")
@@ -655,5 +673,15 @@ func NewFakeConnection() *connection {
 	return &connection{
 		playerReady: make(chan bool, 9999),
 		sendJSON: make(chan interface{}, 9999),
+	}
+}
+
+func clamp(n, min, max int) int {
+	if n > max {
+		return max
+	} else if n < min {
+		return min
+	} else {
+		return n
 	}
 }

@@ -206,10 +206,6 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				fmt.Println("Error unmarshaling MatchCancel", err.Error(), "|", string(msg.Payload))
 			}
 			fmt.Printf("Received matchcancel %v\n", res)
-			//for _ = range res.Delinquents {
-				//TODO: Punish(id)
-			//	continue
-			//}
 			sv := conn.h.connections[conn].(*gameServer)
 			matchIndex := sv.findMatchByPlayer(res.Delinquents[0])
 			if matchIndex == -1 {
@@ -218,6 +214,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			} else {
 				fmt.Println("Abandonment in match index", matchIndex)
 			}
+			punishDelinquents(res.Delinquents)
 			for _, player := range sv.Matches[matchIndex].players {
 				player.Connection.sendJSON <- msg
 			}
