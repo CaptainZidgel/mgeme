@@ -45,7 +45,6 @@ func newHub(hubType string) *Hub {
 }
 
 func (h *Hub) findConnection(id string) (*connection, interface{}) {
-	log.Println("Looking for conn", id, "in hub", h.hubType)
 	for conn, object := range h.connections {
 		if conn.id == id {
 			return conn, object
@@ -58,7 +57,7 @@ func (h *Hub) addConnection(conn *connection) {
 	h.connectionsMx.Lock()	//Locks for writing. If the mutex is already locked, block until its available to lock again.
 	defer h.connectionsMx.Unlock()
 	h.connections[conn] = struct{}{}
-	log.Printf("Added connection to hub")
+	log.Printf("Added connection to %s hub", h.hubType)
 	if (h.hubType == "game") {
 		conn.sendJSON <- &HelloWorld{Hello: "World!"}
 	}
@@ -71,6 +70,6 @@ func (h *Hub) removeConnection(conn *connection) {
 		delete(h.connections, conn)
 		close(conn.sendText)
 		close(conn.sendJSON)
-		log.Printf("Removed connection from hub")
+		log.Printf("Removed connection from %s hub", h.hubType)
 	}
 }

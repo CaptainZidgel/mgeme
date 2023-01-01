@@ -28,24 +28,14 @@ type ban struct {
 
 //Get a ban from the database and return a pointer to it
 func getBan(steamid string) *ban {
-	b := &ban{steamid: steamid}
-	var expires int64
-	var lastOffence *int64
-	var level int
-	err := SelectBan.QueryRow(steamid).Scan(&expires, level, lastOffence)
+	b, err := selectBanMethod(steamid)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil
+		if err != sql.ErrNoRows {
+			log.Printf("Err selecting ban: %v\n", err)
 		} else {
-			log.Fatalf("Error querying bans %v", err)
+			return nil
 		}
 	}
-	b.expires = time.Unix(expires, 0)
-	if lastOffence != nil {
-		t := time.Unix(*lastOffence, 0)
-		b.lastOffence = &t //Can't directly address function returns
-	}
-	b.banLevel = level
 	if !b.isActive() {
 		return nil
 	}
@@ -65,6 +55,7 @@ func createBan(steamid string, leveled bool) *ban {
 	} else {
 		b.banLevel = -1
 	}
+	b.commitBan()
 	return b
 }
 
@@ -95,21 +86,10 @@ func (ban *ban) newPenalty() {
 	ban.commitBan() //write to database
 }
 
-type updBanMock func(steamid string, exp_epoch int64, blvl int, lastoff *time.Time) error
-var updateBanMethod updBanMock
-
-func updateBanSql(steamid string, exp_epoch int64, blvl int, lastoff *time.Time) error {
-	_, err := UpdateBan.Exec(steamid, exp_epoch, blvl, lastoff)
-	return err
-}
-
-func updateBanMock(steamid string, exp_epoch int64, blvl int, lastoff *time.Time) error {
-	return nil
-}
-
 func (ban *ban) commitBan() {
-	expiry := ban.expires.Unix()
-	err := updateBanMethod(ban.steamid, expiry, ban.banLevel, ban.lastOffence)
+	expire_epoch := ban.expires.Unix()
+	lastoff_epoch := ban.lastOffence.Unix()
+	err := updateBanMethod(ban.steamid, expire_epoch, ban.banLevel, lastoff_epoch)
 	if err != nil {
 		log.Fatalf("Error updating ban %v", err)
 	}
@@ -123,5 +103,49 @@ func punishDelinquents(steam64s []string) {
 		} else {
 			b.newPenalty()
 		}
+		log.Printf("Banning user %s until %v (%f hours) for baiting/quitting\n", id, b.expires, b.expires.Sub(now()).Hours())
 	}
+}
+ 
+var selectBanMethod func(steamid string) (*ban, error)
+var updateBanMethod func(steamid string, exp_epoch int64, blvl int, lastoff int64) error
+var testBanSlice = make([]*ban, 0)
+
+func updateBanSql(steamid string, exp_epoch int64, blvl int, lastoff int64) error {
+	_, err := UpdateBan.Exec(steamid, exp_epoch, blvl, lastoff)
+	return err
+}
+
+func updateBanMock(steamid string, exp_epoch int64, blvl int, lastoff int64) error {
+	ti := time.Unix(lastoff, 0)
+	testBanSlice = append(testBanSlice, &ban{steamid:steamid, expires: time.Unix(exp_epoch, 0), banLevel: blvl, lastOffence: &ti})
+	return nil
+}
+
+func selectBanSql(steamid string) (*ban, error) {
+	var expire_epoch int64
+	var lastOffence_epoch int64
+	var level int
+	
+	err := SelectBan.QueryRow(steamid).Scan(&expire_epoch, level, lastOffence_epoch)
+	if err != nil {
+		return nil, err
+	}
+	lo := time.Unix(lastOffence_epoch, 0)
+	b := &ban{
+		steamid: steamid,
+		expires: time.Unix(expire_epoch, 0),
+		banLevel: level,
+		lastOffence: &lo,
+	}
+	return b, nil
+}
+
+func selectBanMock(steamid string) (*ban, error) {
+	for _, b := range testBanSlice {
+		if b.steamid == steamid {
+			return b, nil
+		}
+	}
+	return nil, sql.ErrNoRows
 }

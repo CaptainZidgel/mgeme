@@ -130,11 +130,10 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			var res QueueJoinLeave
 			err := json.Unmarshal(msg.Payload, &res) //write to that empty instance
 			if err != nil {
-				fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
 				if err.Error() == "unexpected end of JSON input" {
 					return errors.New("Malformed JSON input") //not necessarily unexpected end. could be bad format, ie payload named msg or something
 				} else {
-					return err
+					return fmt.Errorf("Error unmarshaling QueueUpdate %v: %v", msg.Payload, err)
 				}
 			}
 			w.queueUpdate(res.Joining, conn)	//Update the server's master queue
@@ -165,7 +164,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			var res ServerHelloWorld
 			err := json.Unmarshal(msg.Payload, &res)
 			if err != nil {
-				fmt.Println("Error unmarshaling", err.Error(), "|", string(msg.Payload))
+				return fmt.Errorf("Error unmarshaling ServerHello %v: %v", msg.Payload, err)
 			}
 			fmt.Printf("Game Server %s connected\n", res.ServerNum)
 			conn.id = res.ServerNum
@@ -186,11 +185,11 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			var res MatchResults
 			err := json.Unmarshal(msg.Payload, &res)
 			if err != nil {
-				return fmt.Errorf("Error unmarshaling MatchResults %v", err)
+				return fmt.Errorf("Error unmarshaling MatchResults %v: %v", msg.Payload, err)
 			}
 			//do something
 			if !res.Finished { //forfeit (punish "res.Loser")
-				_ = true	
+				punishDelinquents([]string{res.Loser})
 			}
 			sv := conn.h.connections[conn].(*gameServer)
 			matchIndex := sv.findMatchByPlayer(res.Winner)
@@ -203,7 +202,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			var res MatchCancel
 			err := json.Unmarshal(msg.Payload, &res)
 			if err != nil {
-				fmt.Println("Error unmarshaling MatchCancel", err.Error(), "|", string(msg.Payload))
+				return fmt.Errorf("Error unmarshaling MatchCancel %v: %v", msg.Payload, err)
 			}
 			fmt.Printf("Received matchcancel %v\n", res)
 			sv := conn.h.connections[conn].(*gameServer)

@@ -42,9 +42,7 @@ func receiveOnce(ws *websocket.Conn, t *testing.T) []byte {
 
 func WrapMessage(typ string, m interface{}, t *testing.T) Message {
 	s, err := json.Marshal(m)
-	if err != nil {
-		t.Fatalf("Err wrapping msg in test: %v", err)
-	}
+	assert.NoErrorf(t, err, "Err wrapping msg in test: %v", err)
 	return Message{Type: typ, Payload: s}
 }
 
@@ -59,9 +57,7 @@ func setDefaultId(id string) gin.HandlerFunc {
 type errHandler func(error, *testing.T)
 
 func defaultErrHandler(err error, t *testing.T) {
-	if err != nil {
-		t.Fatalf("Got error from WsServer route: %v", err)
-	}
+	assert.NoErrorf(t, err, "Got error from WsServer route: %v", err)
 }
 
 func createServerHandler(mgeme *webServer, onWsError errHandler, t *testing.T, middlewares ...gin.HandlerFunc) http.Handler {
@@ -91,19 +87,15 @@ func createUserAndServerConns(handler http.Handler, t *testing.T) (*websocket.Co
 	wsURL := makeWsURL(server, "")
 	
 	gameConn, _, err := websocket.DefaultDialer.Dial(wsURL + "server", nil)
-	if err != nil {
-		t.Fatalf("Error dialing server endpoint %v", err)
-	}
+	assert.NoErrorf(t, err, "Error dialing server endpoint %v", err)
+	
 	
 	userConn, _, err := websocket.DefaultDialer.Dial(wsURL + "user", nil)
-	if err != nil {
-		t.Fatalf("Error dialing user endpoint %v", err)
-	}
+	assert.NoErrorf(t, err, "Error dialing user endpoint %v", err)
 	
 	err = gameConn.WriteJSON(WrapMessage("ServerHello", ServerHelloWorld{ServerNum: "1", ServerHost: "FakeHost"}, t))
-	if err != nil {
-		t.Fatalf("Error writing server-hello %v", err)
-	}
+	assert.NoErrorf(t, err, "Error writing server-hello %v", err)
+	
 	_ = readWaitFor(gameConn, "ServerAck", t, false)
 	t.Log("Gameconn acknowledged")
 	return userConn, gameConn, server
@@ -115,9 +107,10 @@ func TestRejectUnlogged(t *testing.T) {
 	sv := createServerHandler(
 		mgeme,
 		func(err error, t *testing.T) {
-			if err.Error() != "Rejecting websocket connection for unloggedin user" {
+			assert.EqualErrorf(t, err, "Rejecting websocket connection for unloggedin user", "Incorrect error when attempting to init ws connection while unloggedin %v", err)
+			/*if err.Error() != "Rejecting websocket connection for unloggedin user" {
 				t.Fatalf("Incorrect error when attempting to init ws connection while unloggedin %v", err)
-			}
+			}*/
 		},
 		t,
 		//if we included this we would be "logged in": SetDefaultId("FakePlayer123456789"),
@@ -153,21 +146,17 @@ func TestConnect(t *testing.T) {
 	defer server.Close()
 	wsURL := makeWsURL(server, "user")
 	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("could not open a ws connection on %s %v\n", wsURL, err)
-	}
+	assert.NoErrorf(t, err, "Could not open a ws connection on %s: %v", wsURL, err)
 	defer ws.Close()
 	
 	//Initial connection
 	m := receiveOnce(ws, t) //The queue is always sent after connecting. We want to receive this
 	var ac AckQueue
 	err = json.Unmarshal(m, &ac)
-	if err != nil {
-		t.Fatalf("Could not read queue ack msg: %v\n", err)
-	}
-	if (ac.IsInQueue || len(ac.Queue) > 0) {
-		t.Fatalf("Queue is not empty. IIQ: %v | Queue: %v\n", ac.IsInQueue, ac.Queue)
-	}
+	assert.NoErrorf(t, err, "Could not read queue ack msg: %v", err)
+
+	assert.Equal(t, 0, len(ac.Queue), "Queue should be empty")
+	assert.Equal(t, false, ac.IsInQueue, "Should not be marked in queue")
 }
 
 //Most of these tests could be run in parallel, technically, but at the moment that wouldn't really speed anything up and would just make the logs more confusing. To make a test parallel, add t.Parallel() to the start
@@ -200,12 +189,10 @@ func TestReadyUpExpire(t *testing.T) {
 	mgeme.queueUpdate(true, luigi)
 	
 	match, err := mgeme.dummyMatch()
-	if err != nil {
-		t.Fatalf("Error forming dummy match %v", err)
-	}
-	if match.players[0].Connection == nil || match.players[1].Connection == nil {
-		t.Fatalf("One of the player connections is nil. %v", match.players)
-	}
+	assert.NoErrorf(t, err, "Error forming dummy match: %v", err)
+
+	assert.NotNil(t, match.players[0].Connection, "Player 0 connection shouldn't be nil")
+	assert.NotNil(t, match.players[1].Connection, "Player 1 connection shouldn't be nil")
 	go mgeme.sendReadyUpPrompt(match)
 
 	msg := readWaitFor(userConn, "RupSignal", t, false)
@@ -259,12 +246,10 @@ func TestReadyUpMismatch(t *testing.T) {
 	mgeme.queueUpdate(true, baiter)
 	
 	match, err := mgeme.dummyMatch()
-	if err != nil {
-		t.Fatalf("Error forming dummy match %v", err)
-	}
-	if match.players[0].Connection == nil || match.players[1].Connection == nil {
-		t.Fatalf("One of the player connections is nil. %v", match.players)
-	}
+	assert.NoErrorf(t, err, "Error forming dummy match %v", err)
+	
+	assert.NotNil(t, match.players[0].Connection, "Player 0 connection shouldn't be nil")
+	assert.NotNil(t, match.players[1].Connection, "Player 1 connection shouldn't be nil")
 	go mgeme.sendReadyUpPrompt(match)
 
 	//Initial signal to ready up
@@ -369,10 +354,13 @@ func TestUpdateBanLevel(t *testing.T) {
 	assert.Equal(t, now().Add(expireLadder[1]), b.expires, "expire should be equal to second ban level (idx 2)")
 	
 	testNow = now().Add(1 * weekDur)
-	assert.Equal(t, b.isActive(), false, "ban should be expired")
+	assert.Equal(t, false, b.isActive(), "ban should be expired")
 }
 
 func TestDelinquency(t *testing.T) {
+	updateBanMethod = updateBanMock
+	selectBanMethod = selectBanMock
+	
 	mgeme := newWebServer()
 	mgeme.playerHub.addConnection(&connection{
 		id: "B",
@@ -392,9 +380,8 @@ func TestDelinquency(t *testing.T) {
 	defer server.Close()
 
 	gc, obj := mgeme.gameServerHub.findConnection("1")
-	if gc == nil {
-		t.Fatal("No game server connection found")
-	}
+	assert.NotNil(t, gc, "Game server should be found")
+	assert.NotNil(t, obj, "Game object should not be nil")
 	gsv := obj.(*gameServer)
 
 	A, _ := mgeme.playerHub.findConnection("A")
@@ -406,22 +393,24 @@ func TestDelinquency(t *testing.T) {
 	go mgeme.initializeMatch(match)
 
 	_ = readWaitFor(gameConn, "MatchDetails", t, false)
-	if len(gsv.Matches) != 1 {
-		t.Fatalf("Have %d matches instead of 1", len(gsv.Matches))
-	}
+	assert.Equal(t, 1, len(gsv.Matches), "Should only have 1 match")
 
 	msg := WrapMessage("MatchCancel", MatchCancel{
 		Delinquents: []string{"A"},
 		Arrived: "2",
 		Arena: 1,
 	}, t)
+	
 	mgeme.HandleMessage(msg, gc.id, gc)
 	
 	tmr := time.NewTimer(1 * time.Second)
 	<-tmr.C
-	if len(gsv.Matches) > 0 {
-		t.Fatalf("Didn't delete match")
-	}
+	assert.Equal(t, 0, len(gsv.Matches), "Should have deleted all matches")
+	
+	b := getBan("A")
+	assert.NotNil(t, b, "Should get ban")
+	assert.Equal(t, now().Add(expireLadder[0]).Truncate(time.Second), b.expires.Truncate(time.Second), "ID A should be banned until now+30 minutes")
+	//I'm using truncate here even though in other tests I may prefer to compare time.Time to time.Time, because actually waiting on messages being sent produces slight differences in times.
 }
 
 //TODO

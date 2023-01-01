@@ -90,6 +90,8 @@ type webServer struct{
 	
 	gameQueue PlayerEntries
 	rupTime int
+	
+	queueMutex sync.RWMutex
 }
 
 func newWebServer() *webServer {
@@ -98,6 +100,8 @@ func newWebServer() *webServer {
 	web.playerHub = newHub("user")
 	web.gameQueue = make(PlayerEntries)
 	web.rupTime = 5
+	
+	web.queueMutex = sync.RWMutex{}
 		
 	return &web
 }
@@ -200,6 +204,7 @@ func main() {
 	if err != nil { log.Fatal(err) }
 	defer UpdateBan.Close()
 	updateBanMethod = updateBanSql
+	selectBanMethod = selectBanSql
 	
 	//AddPlayersTest(118, 14, userHub)
 	mgeme.sendQueueToClients()
@@ -314,8 +319,6 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) (error) {
 
 	usr, lgdin := c.Get("User") //lgdin (loggedin) represents if the key User exists in context
 	if lgdin || hubtype == "game" { //We don't bother upgrading the connection for an unlogged in user (but we will for game servers!)
-		fmt.Printf("Accepting websocket connection type: %s\n", hubtype)
-
 		write := c.Writer
 		r := c.Request
 		//"Upgrade" the HTTP connection to a WebSocket connection, and use default buffer sizes
@@ -368,15 +371,13 @@ func (w *webServer) resolveConnectingUser(conn *connection) {
 	for _, server := range w.gameServerHub.connections {
 		server, ok := server.(*gameServer)
 		if !ok {
-			log.Printf("Error casting serverhub connection to server type %v\n", server)
+			log.Printf("Couldn't cast serverhub connection to server type %v\n", server)
 		} else {
 			matchIndex := server.findMatchByPlayer(conn.id)
 			if matchIndex > -1 {
 				log.Printf("Found user in match on server %d, sending to user\n", matchIndex)
 				conn.sendJSON <- server.Matches[matchIndex]
 				break
-			} else {
-				log.Println("Could not find user in match")
 			}
 		}
 	}
@@ -384,22 +385,28 @@ func (w *webServer) resolveConnectingUser(conn *connection) {
 
 func (w *webServer) queueUpdate(joining bool, conn *connection) { //The individual act of joining/leaving the queue. Should be followed by SendQueueToClients
 	steamid := conn.id
+	w.queueMutex.Lock()
 	if joining { //add to queue
-			user := w.playerHub.connections[conn].(User)
+			user, ok := w.playerHub.connections[conn].(User)
+			if !ok {
+				log.Printf("Error casting user to User at queueUpdate.")
+			}
 			w.gameQueue[steamid] = PlayerAdded{Connection: conn, User: user, Steamid: steamid, Elo: GetElo(conn.id), WaitingSince: time.Now()}//steamid//lol
 			log.Println("Adding to queue")
 	} else { //remove from queue
 			delete(w.gameQueue, steamid) //remove steamid from gamequeue
 			log.Println("Removing from queue")
 	}
-
+	w.queueMutex.Unlock()
 	w.sendQueueToClients()
 }
 
 func (w *webServer) sendQueueToClients() {
+	w.queueMutex.RLock()
 	for c := range w.playerHub.connections {
 		c.sendJSON <- NewAckQueueMsg(w.gameQueue, c.id) //send a personalized ack out to each client, including confirmation that they're still inqueue
 	}
+	w.queueMutex.RUnlock()
 }
 
 type gameServer struct { //The stuff the webserver will want to know, doesn't necessarily have info like the IP as that isn't necessary.
@@ -649,6 +656,7 @@ func (w *webServer) expireRup(m *Match, readies ...bool) {
 }
 
 func (w *webServer) clearAllMatches() {
+	w.queueMutex.Lock()
 	for _, server := range w.gameServerHub.connections {
 		server := server.(*gameServer)
 		for _, match := range server.Matches {
@@ -659,6 +667,7 @@ func (w *webServer) clearAllMatches() {
 		}
 		server.Matches = make(map[int]*Match)
 	}
+	w.queueMutex.Unlock()
 	w.sendQueueToClients()
 }
 
