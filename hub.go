@@ -5,7 +5,6 @@ package main
 import (
 	"log"
 	"sync"
-	"time"
 )
 
 type Hub struct {
@@ -24,7 +23,7 @@ func newHub(hubType string) *Hub {
 		connections: make(map[*connection]interface{}),
 		hubType: hubType,
 	}
-	
+	/*
 	go func() {
 		for {	//this loop serves back any messages one client sends up down to other clients
 			msg := <- h.broadcast //when a message is put into the broadcast channel, it will be spat out here (<-) and assigned to msg (:=)
@@ -41,6 +40,7 @@ func newHub(hubType string) *Hub {
 			h.connectionsMx.RUnlock() //Undoes the lock
 		}
 	}()
+	*/
 	return h
 }
 
@@ -68,8 +68,15 @@ func (h *Hub) removeConnection(conn *connection) {
 	defer h.connectionsMx.Unlock()
 	if _, ok := h.connections[conn]; ok {
 		delete(h.connections, conn)
+		for len(conn.sendJSON) > 0 {
+			<-conn.sendJSON //drain
+		}
 		close(conn.sendText)
 		close(conn.sendJSON)
-		log.Printf("Removed connection from %s hub", h.hubType)
+		for len(conn.playerReady) > 0 {
+			<-conn.playerReady
+		}
+		close(conn.playerReady)
+		log.Printf("Removed connection %s from %s hub", conn.id, h.hubType)
 	}
 }

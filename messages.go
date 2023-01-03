@@ -105,7 +105,7 @@ type RupSignal struct {
 }
 
 func NewRupSignalMsg(show bool, selfrupped bool, deadline int) RupSignal { //I should move to this format for all messages sent from Go server so I don't need to rewrite type
-	return RupSignal{Type: "RupSignal", ShowPrompt: show, SelfRupped: selfrupped, ExpireAt: time.Now().Add(time.Second * time.Duration(deadline)).Unix()}
+	return RupSignal{Type: "RupSignal", ShowPrompt: show, SelfRupped: selfrupped, ExpireAt: now().Add(time.Second * time.Duration(deadline)).Unix()}
 }
 
 type ServerIssue struct { //Used to communicate with users that something is interrupting the service (ie, a gameserver is down, the webserver is erroring, idk something like that
@@ -138,14 +138,21 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			}
 			w.queueUpdate(res.Joining, conn)	//Update the server's master queue
 		} else if msg.Type == "Ready" {
-			conn.playerReady <- true
+			w.erMutex.Lock()
+			if w.expectingRup[conn.id] {
+				w.erMutex.Unlock()
+				conn.playerReady <- true
+			} else {
+				w.erMutex.Unlock()
+				log.Println("Warning: out of period rup signal")
+			}
 		} else if msg.Type == "TestMatch" {
 			var res TestMatch
 			json.Unmarshal(msg.Payload, &res)
 			if res.X == "1v1" {
 				m, err := w.dummyMatch()
 				if err != nil { log.Fatalf("%v", err) }
-				go w.sendReadyUpPrompt(m)
+				go w.sendReadyUpPrompt(m, nil)
 			} else if res.X == "1v_" {
 				m := &Match{
 					Arena: 1,
@@ -214,8 +221,8 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				fmt.Println("Abandonment in match index", matchIndex)
 			}
 			punishDelinquents(res.Delinquents)
-			for _, player := range sv.Matches[matchIndex].players {
-				player.Connection.sendJSON <- msg
+			for _, player := range w.getPlayerConns(sv.Matches[matchIndex]) {
+				player.sendJSON <- msg
 			}
 			sv.deleteMatch(matchIndex)
 		} else {

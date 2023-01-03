@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 	"encoding/json"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"sync"
 )
 
 func makeWsURL(server *httptest.Server, endpoint string) string {
@@ -42,7 +43,7 @@ func receiveOnce(ws *websocket.Conn, t *testing.T) []byte {
 
 func WrapMessage(typ string, m interface{}, t *testing.T) Message {
 	s, err := json.Marshal(m)
-	assert.NoErrorf(t, err, "Err wrapping msg in test: %v", err)
+	require.NoErrorf(t, err, "Err wrapping msg in test: %v", err)
 	return Message{Type: typ, Payload: s}
 }
 
@@ -57,7 +58,7 @@ func setDefaultId(id string) gin.HandlerFunc {
 type errHandler func(error, *testing.T)
 
 func defaultErrHandler(err error, t *testing.T) {
-	assert.NoErrorf(t, err, "Got error from WsServer route: %v", err)
+	require.NoErrorf(t, err, "Got error from WsServer route: %v", err)
 }
 
 func createServerHandler(mgeme *webServer, onWsError errHandler, t *testing.T, middlewares ...gin.HandlerFunc) http.Handler {
@@ -69,7 +70,13 @@ func createServerHandler(mgeme *webServer, onWsError errHandler, t *testing.T, m
 	
 	rout.Use(middlewares...)
 	
+	//default user entrypoint. use /user?id=Mario to set contextual user object.
 	rout.GET("/user", func (c *gin.Context) {
+		id, ok := c.GetQuery("id")
+		if ok {
+			t.Logf("Setting user for query %s", id)
+			c.Set("User", User{id: id})
+		}
 		err := mgeme.WsServer(c, "user")
 		onWsError(err, t)
 	})
@@ -82,23 +89,32 @@ func createServerHandler(mgeme *webServer, onWsError errHandler, t *testing.T, m
 	return rout.Handler()
 }
 
-func createUserAndServerConns(handler http.Handler, t *testing.T) (*websocket.Conn, *websocket.Conn, *httptest.Server) {
+func createOneUser(t *testing.T, server *httptest.Server, withId string) *websocket.Conn {
+	var endpoint string
+	if withId != "" {
+		endpoint = "user?id=" + withId
+	} else {
+		endpoint = "user"
+	}
+	wsURL := makeWsURL(server, endpoint)
+	userConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.NoErrorf(t, err, "Error dialing user endpoint %v", err)
+	return userConn
+}
+
+func createServerAndGameConns(handler http.Handler, t *testing.T) (*websocket.Conn, *httptest.Server) {
 	server := httptest.NewServer(handler)
 	wsURL := makeWsURL(server, "")
 	
 	gameConn, _, err := websocket.DefaultDialer.Dial(wsURL + "server", nil)
-	assert.NoErrorf(t, err, "Error dialing server endpoint %v", err)
-	
-	
-	userConn, _, err := websocket.DefaultDialer.Dial(wsURL + "user", nil)
-	assert.NoErrorf(t, err, "Error dialing user endpoint %v", err)
+	require.NoErrorf(t, err, "Error dialing server endpoint %v", err)
 	
 	err = gameConn.WriteJSON(WrapMessage("ServerHello", ServerHelloWorld{ServerNum: "1", ServerHost: "FakeHost"}, t))
-	assert.NoErrorf(t, err, "Error writing server-hello %v", err)
+	require.NoErrorf(t, err, "Error writing server-hello %v", err)
 	
 	_ = readWaitFor(gameConn, "ServerAck", t, false)
 	t.Log("Gameconn acknowledged")
-	return userConn, gameConn, server
+	return gameConn, server
 }
 
 //A connection with no steamid
@@ -107,7 +123,7 @@ func TestRejectUnlogged(t *testing.T) {
 	sv := createServerHandler(
 		mgeme,
 		func(err error, t *testing.T) {
-			assert.EqualErrorf(t, err, "Rejecting websocket connection for unloggedin user", "Incorrect error when attempting to init ws connection while unloggedin %v", err)
+			require.EqualErrorf(t, err, "Rejecting websocket connection for unloggedin user", "Incorrect error when attempting to init ws connection while unloggedin %v", err)
 			/*if err.Error() != "Rejecting websocket connection for unloggedin user" {
 				t.Fatalf("Incorrect error when attempting to init ws connection while unloggedin %v", err)
 			}*/
@@ -146,140 +162,123 @@ func TestConnect(t *testing.T) {
 	defer server.Close()
 	wsURL := makeWsURL(server, "user")
 	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	assert.NoErrorf(t, err, "Could not open a ws connection on %s: %v", wsURL, err)
+	require.NoErrorf(t, err, "Could not open a ws connection on %s: %v", wsURL, err)
 	defer ws.Close()
 	
 	//Initial connection
 	m := receiveOnce(ws, t) //The queue is always sent after connecting. We want to receive this
 	var ac AckQueue
 	err = json.Unmarshal(m, &ac)
-	assert.NoErrorf(t, err, "Could not read queue ack msg: %v", err)
+	require.NoErrorf(t, err, "Could not read queue ack msg: %v", err)
 
-	assert.Equal(t, 0, len(ac.Queue), "Queue should be empty")
-	assert.Equal(t, false, ac.IsInQueue, "Should not be marked in queue")
+	require.Equal(t, 0, len(ac.Queue), "Queue should be empty")
+	require.Equal(t, false, ac.IsInQueue, "Should not be marked in queue")
 }
 
 //Most of these tests could be run in parallel, technically, but at the moment that wouldn't really speed anything up and would just make the logs more confusing. To make a test parallel, add t.Parallel() to the start
 
-//Neither users respond to the ready up signal
-func TestReadyUpExpire(t *testing.T) {
-	mgeme := newWebServer()
-	mgeme.playerHub.addConnection(&connection{
-			sendText: make(chan []byte, 256), 
-			sendJSON: make(chan interface{}, 1024),
-			playerReady: make(chan bool, 8),
-			id: "Mario",
+func TestReadyUp(t *testing.T) {
+	type rupper map[string]int //key: id, int: seconds after signal to rup
+	type exq map[string]bool
+
+	var tests = []struct{
+		name string
+		responders rupper
+		matchOrQueue string
+		expectedQueue exq
+	}{
+		{name: "A", responders: make(rupper), matchOrQueue: "q", expectedQueue: make(exq)},
+		{name: "B", responders: rupper{"Mario": 1}, matchOrQueue: "q", expectedQueue: exq{"Mario": true}},
+		{name: "C", responders: rupper{"Mario": 1, "Luigi": 1}, matchOrQueue: "m", expectedQueue: make(exq)}, //after put in a match, q should be empty
+		{name: "D", responders: rupper{"Mario": 1, "Luigi": 6}, matchOrQueue: "q", expectedQueue: exq{"Mario": true}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			mgeme := newWebServer()
+			sv := createServerHandler(mgeme, defaultErrHandler, t)
+				
+			gameConn, server := createServerAndGameConns(sv, t)
+
+			wsConnA := createOneUser(t, server, "Luigi")
+			wsConnB := createOneUser(t, server, "Mario")
+			
+			//Add two players to queue
+			players := make(map[string]*websocket.Conn)
+			var mario *connection
+			var luigi *connection
+			
+			player_cond := func() bool {
+				mario, _ = mgeme.playerHub.findConnection("Mario")
+				luigi, _ = mgeme.playerHub.findConnection("Luigi")
+				return mario != nil && luigi != nil
+			}
+			
+			require.Eventuallyf(t, player_cond, 1 * time.Second, 10 * time.Millisecond, "Player conns shouldn't be nil in test %s", test.name)
+			
+			mgeme.queueUpdate(true, mario)
+			mgeme.queueUpdate(true, luigi)
+			players["Luigi"] = wsConnA
+			players["Mario"] = wsConnB
+			
+			match, err := mgeme.dummyMatch()
+			require.NoErrorf(t, err, "Error forming dummy match: %v", err)
+			var wgSendPrompt sync.WaitGroup
+			wgSendPrompt.Add(1)
+			go mgeme.sendReadyUpPrompt(match, &wgSendPrompt)
+			
+			expected_rs := NewRupSignalMsg(true, false, mgeme.rupTime)
+			msg := readWaitFor(wsConnA, "RupSignal", t, false)
+			var rs RupSignal
+			json.Unmarshal(msg, &rs)
+			require.EqualValues(t, expected_rs, rs, "Rup signal value not what was expected")
+
+			var wgSendingRups sync.WaitGroup
+			for id, conn := range players {
+				wgSendingRups.Add(1)
+				go func(id string, conn *websocket.Conn) {
+					defer wgSendingRups.Done()
+					seconds, exists := test.responders[id]
+					if exists {
+						<-time.After(time.Duration(seconds) * time.Second)
+						t.Log("Test-Sending rup signal....")
+						conn.WriteJSON(Message{Type: "Ready"})
+					}
+				}(id, conn)
+			}
+			wgSendingRups.Wait()
+			queue_cond := func() bool {
+				mgeme.queueMutex.RLock()
+				_, mq := mgeme.gameQueue["Mario"]
+				_, lq := mgeme.gameQueue["Luigi"]
+				mgeme.queueMutex.RUnlock()
+				return (test.expectedQueue["Mario"] == mq && test.expectedQueue["Luigi"] == lq)
+			}
+			_ = readWaitFor(wsConnA, "RupSignal", t, false)
+			require.Eventuallyf(t, queue_cond, 500 * time.Millisecond, 10*time.Millisecond, "Queues should be equal in test %s", test.name)
+			if test.matchOrQueue == "m" {
+				_, obj := mgeme.gameServerHub.findConnection("1")
+				<-time.After(500 * time.Millisecond)
+				require.True(t, obj.(*gameServer).findMatchByPlayer("Mario") != -1)
+			}
+			wgSendPrompt.Wait()
+			
+			gameConn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+			gameConn.Close()
+			
+			wsConnA.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+			wsConnB.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+			
+			wsConnA.Close()
+			wsConnB.Close()
+			server.CloseClientConnections()
+			server.Close()
+			
+			<-time.After(time.Second)
 		})
-	sv := createServerHandler(
-		mgeme,
-		defaultErrHandler,
-		t,
-		setDefaultId("Luigi"),
-		GetUser(), //Required to check if loggedin
-	)
-	
-	userConn, gameConn, server := createUserAndServerConns(sv, t)
-	defer userConn.Close()
-	defer gameConn.Close()
-	defer server.Close()
-	
-	mario, _ := mgeme.playerHub.findConnection("Mario")
-	luigi, _ := mgeme.playerHub.findConnection("Luigi")
-	mgeme.queueUpdate(true, mario)
-	mgeme.queueUpdate(true, luigi)
-	
-	match, err := mgeme.dummyMatch()
-	assert.NoErrorf(t, err, "Error forming dummy match: %v", err)
-
-	assert.NotNil(t, match.players[0].Connection, "Player 0 connection shouldn't be nil")
-	assert.NotNil(t, match.players[1].Connection, "Player 1 connection shouldn't be nil")
-	go mgeme.sendReadyUpPrompt(match)
-
-	msg := readWaitFor(userConn, "RupSignal", t, false)
-	var rs RupSignal
-	json.Unmarshal(msg, &rs)
-	t.Logf("Rup signal: %v", rs)
-	if (!rs.ShowPrompt || rs.SelfRupped) {
-		t.Fatalf("[RUP signal begin] Incorrect values for showprompt or selfrupped: (want true & false, got: %t & %t)\n", rs.ShowPrompt, rs.SelfRupped)
-	}
-	
-	msg = readWaitFor(userConn, "RupSignal", t, false)
-	json.Unmarshal(msg, &rs)
-	t.Logf("Rup signal: %v", rs)
-	if (rs.ShowPrompt || rs.SelfRupped) {
-		t.Fatalf("[RUP signal expire] Incorrect value for showprompt or selfrupped: (want false & false, got: %t & %t) \n", rs.ShowPrompt, rs.SelfRupped)
-	}
-	
-	_, waiterInQueue := mgeme.gameQueue["Waiter"]
-	_, baiterInQueue := mgeme.gameQueue["Baiter"]
-	if (baiterInQueue || waiterInQueue) {
-		t.Fatalf("Waiter or Baiter values not correct. (Want false & false, got %t & %t)\n", waiterInQueue, baiterInQueue)
 	}
 }
 
-//One user readies, the other doesn't
-func TestReadyUpMismatch(t *testing.T) {
-	mgeme := newWebServer()
-	mgeme.playerHub.addConnection(&connection{
-			sendText: make(chan []byte, 256), 
-			sendJSON: make(chan interface{}, 1024),
-			playerReady: make(chan bool, 8),
-			id: "Baiter", //this user doesn't ready
-		})
-		
-	sv := createServerHandler(
-		mgeme,
-		defaultErrHandler,
-		t,
-		setDefaultId("Waiter"), //this user readies
-		GetUser(), //Required to check if loggedin
-	)
-	
-	userConn, gameConn, server := createUserAndServerConns(sv, t)
-	defer userConn.Close()
-	defer gameConn.Close()
-	defer server.Close()
-	
-	waiter, _ := mgeme.playerHub.findConnection("Waiter") //the client connection that wraps around the websocket connection userConn
-	baiter, _ := mgeme.playerHub.findConnection("Baiter")
-	mgeme.queueUpdate(true, waiter)
-	mgeme.queueUpdate(true, baiter)
-	
-	match, err := mgeme.dummyMatch()
-	assert.NoErrorf(t, err, "Error forming dummy match %v", err)
-	
-	assert.NotNil(t, match.players[0].Connection, "Player 0 connection shouldn't be nil")
-	assert.NotNil(t, match.players[1].Connection, "Player 1 connection shouldn't be nil")
-	go mgeme.sendReadyUpPrompt(match)
-
-	//Initial signal to ready up
-	msg := readWaitFor(userConn, "RupSignal", t, false)
-	var rs RupSignal
-	json.Unmarshal(msg, &rs)
-	t.Logf("Rup signal: %v", rs)
-	if (!rs.ShowPrompt || rs.SelfRupped) {
-		t.Fatalf("[RUP signal begin] Incorrect values for showprompt or selfrupped: (want true & false, got: %t & %t)\n", rs.ShowPrompt, rs.SelfRupped)
-	}
-	rupIn2Seconds := time.NewTimer(2 * time.Second)
-	<-rupIn2Seconds.C
-	waiter.playerReady <- true
-	
-	msg = readWaitFor(userConn, "RupSignal", t, false)
-	json.Unmarshal(msg, &rs)
-	t.Logf("Rup signal: %v", rs)
-	if (rs.ShowPrompt || rs.SelfRupped) {
-		t.Fatalf("[RUP signal expire] Incorrect value for showprompt or selfrupped: (want false & true, got: %t & %t) \n", rs.ShowPrompt, rs.SelfRupped)
-	}
-	
-	_, waiterInQueue := mgeme.gameQueue["Waiter"]
-	_, baiterInQueue := mgeme.gameQueue["Baiter"]
-	if (baiterInQueue || !waiterInQueue) {
-		t.Fatalf("Waiter or Baiter values not correct. (Want true & false, got %t & %t)\n", waiterInQueue, baiterInQueue)
-	}
-}
-
-//Todo:
-//func TestReadyUpBothGood(t *testing.T) {
 
 /*func TestWaitingForPlayersOneGood(t *testing.T) {
 	mgeme := newWebServer()
@@ -322,39 +321,39 @@ func TestReadyUpMismatch(t *testing.T) {
 
 func TestUpdateBanLevel(t *testing.T) {
 	updateBanMethod = updateBanMock
-	//The penalize package should call `now` when it wants time.Now(), here it will return whatever value we set testNow to.
+	//The penalize package should call `now` when it wants time.Now(), here it will return whatever value we set testNow to so we can time travel (if time travel is not required, we can use regular now anyway).
 	var testNow = time.Now()
 	now = func() time.Time {
 		return testNow
 	}
 
 	b := createBan("myId", true)
-	assert.Equal(t, 0, b.banLevel, "ban levels should start at 0")
-	assert.Equal(t, now().Add(expireLadder[0]), b.expires, "expire should be equal to first ban level (idx 0)")
+	require.Equal(t, 0, b.banLevel, "ban levels should start at 0")
+	require.Equal(t, now().Add(expireLadder[0]), b.expires, "expire should be equal to first ban level (idx 0)")
 
 	testNow = testNow.Add(1 * dayDur)
 	b.newPenalty()
-	assert.Equal(t, 1, b.banLevel, "ban level should have increased by 1")
-	assert.Equal(t, now().Add(expireLadder[1]), b.expires, "expire should be equal to second ban level (idx 1)")
+	require.Equal(t, 1, b.banLevel, "ban level should have increased by 1")
+	require.Equal(t, now().Add(expireLadder[1]), b.expires, "expire should be equal to second ban level (idx 1)")
 
 	testNow = now().Add(9 * dayDur)
 	b.newPenalty()	//First, set level according to time passed since last offence. Then increase by 1. (We should go to 0 then back to 1)
-	assert.Equal(t, 0, b.banLevel, "ban level should have gone to 0")
-	assert.Equal(t, now().Add(expireLadder[0]), b.expires, "expire should be equal to first ban level (idx 0)")
+	require.Equal(t, 0, b.banLevel, "ban level should have gone to 0")
+	require.Equal(t, now().Add(expireLadder[0]), b.expires, "expire should be equal to first ban level (idx 0)")
 	
 	b.newPenalty()
 	b.newPenalty()
 	b.newPenalty()
-	assert.Equal(t, 3, b.banLevel, "ban level should be 3")
-	assert.Equal(t, now().Add(expireLadder[3]), b.expires, "expire should be equal to fourth ban level (idx 3)")
+	require.Equal(t, 3, b.banLevel, "ban level should be 3")
+	require.Equal(t, now().Add(expireLadder[3]), b.expires, "expire should be equal to fourth ban level (idx 3)")
 	
 	testNow = now().Add(2 * weekDur)
 	b.newPenalty()
-	assert.Equal(t, 1, b.banLevel, "ban level should be at 3 - 2 = 1")
-	assert.Equal(t, now().Add(expireLadder[1]), b.expires, "expire should be equal to second ban level (idx 2)")
+	require.Equal(t, 1, b.banLevel, "ban level should be at 3 - 2 = 1")
+	require.Equal(t, now().Add(expireLadder[1]), b.expires, "expire should be equal to second ban level (idx 2)")
 	
 	testNow = now().Add(1 * weekDur)
-	assert.Equal(t, false, b.isActive(), "ban should be expired")
+	require.Equal(t, false, b.isActive(), "ban should be expired")
 }
 
 func TestDelinquency(t *testing.T) {
@@ -374,14 +373,13 @@ func TestDelinquency(t *testing.T) {
 		GetUser(),
 	)
 
-	userConn, gameConn, server := createUserAndServerConns(sv, t)
-	defer userConn.Close()
+	gameConn, server := createServerAndGameConns(sv, t)
 	defer gameConn.Close()
 	defer server.Close()
 
 	gc, obj := mgeme.gameServerHub.findConnection("1")
-	assert.NotNil(t, gc, "Game server should be found")
-	assert.NotNil(t, obj, "Game object should not be nil")
+	require.NotNil(t, gc, "Game server should be found")
+	require.NotNil(t, obj, "Game object should not be nil")
 	gsv := obj.(*gameServer)
 
 	A, _ := mgeme.playerHub.findConnection("A")
@@ -393,7 +391,7 @@ func TestDelinquency(t *testing.T) {
 	go mgeme.initializeMatch(match)
 
 	_ = readWaitFor(gameConn, "MatchDetails", t, false)
-	assert.Equal(t, 1, len(gsv.Matches), "Should only have 1 match")
+	require.Equal(t, 1, len(gsv.Matches), "Should only have 1 match")
 
 	msg := WrapMessage("MatchCancel", MatchCancel{
 		Delinquents: []string{"A"},
@@ -405,11 +403,11 @@ func TestDelinquency(t *testing.T) {
 	
 	tmr := time.NewTimer(1 * time.Second)
 	<-tmr.C
-	assert.Equal(t, 0, len(gsv.Matches), "Should have deleted all matches")
+	require.Equal(t, 0, len(gsv.Matches), "Should have deleted all matches")
 	
 	b := getBan("A")
-	assert.NotNil(t, b, "Should get ban")
-	assert.Equal(t, now().Add(expireLadder[0]).Truncate(time.Second), b.expires.Truncate(time.Second), "ID A should be banned until now+30 minutes")
+	require.NotNil(t, b, "Should get ban")
+	require.Equal(t, now().Add(expireLadder[0]).Truncate(time.Second), b.expires.Truncate(time.Second), "ID A should be banned until now+30 minutes")
 	//I'm using truncate here even though in other tests I may prefer to compare time.Time to time.Time, because actually waiting on messages being sent produces slight differences in times.
 }
 

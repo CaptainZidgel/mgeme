@@ -54,7 +54,7 @@ func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn, webserver 
 				c.h.removeConnection(c)
 				break
 			} else { //err is not a websocket close error
-				fmt.Printf("%v\n", err)
+				fmt.Printf("Breaking due to %v\n", err)
 				c.h.removeConnection(c)
 				break
 			}
@@ -62,9 +62,9 @@ func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn, webserver 
 		}
 		herr := webserver.HandleMessage(jmsg, c.id, c)
 		if herr != nil {
+			fmt.Printf("Received err handling message %v: %v", jmsg, herr)
 			c.sendText <- []byte(herr.Error()) //This echos errors back to the sender. Need to update this as its nonfunctional atm.
 		}
-		//c.h.broadcast <- message
 	}
 }
 
@@ -75,7 +75,7 @@ func (c *connection) writer(wg *sync.WaitGroup, conn *websocket.Conn) {
 			case payload := <- c.sendJSON:
 				err := conn.WriteJSON(payload)
 				if err != nil {
-					break
+					break //This only breaks out of the select, not the for.
 				}
 			case text := <- c.sendText:
 				conn.WriteMessage(websocket.TextMessage, text)
