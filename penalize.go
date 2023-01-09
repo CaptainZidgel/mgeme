@@ -127,7 +127,7 @@ func selectBanSql(steamid string) (*ban, error) {
 	var lastOffence_epoch int64
 	var level int
 	
-	err := SelectBan.QueryRow(steamid).Scan(&expire_epoch, level, lastOffence_epoch)
+	err := SelectBan.QueryRow(steamid).Scan(&expire_epoch, &level, &lastOffence_epoch)
 	if err != nil {
 		return nil, err
 	}

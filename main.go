@@ -468,13 +468,14 @@ func (s *gameServer) assignArena(m *Match, gamemap []int) error {
 		arena_index := gamemap[idx]
 		x, ok := s.Matches[arena_index]//x: a pointer to a match or nil, and if that value is defined.
 		if (ok && x != nil) { //"ok" will be true if x is defined as nil, since it could be a pointer
-			if (i == len(gamemap) - 1) {
+			if (i == len(gamemap) - 1) { //if we've iterated through all arenas still, we're full
 				s.Full = true
 				return fmt.Errorf("No room in this server") //Hopefully I won't be stupid enough to call this function on a full server but if I am, I covered my bases.
-			} else {
+			} else { //there's a match in this arena but there's more to check. onwards with the loop
 				continue
 			}
 		} //if undefined or defined as nil, the arena is free
+		m.Arena = arena_index
 		s.Matches[arena_index] = m
 		return nil
 	}
