@@ -24,6 +24,8 @@ import (
 	"flag"
 	"math/rand"
 	"os"
+	"github.com/dgraph-io/ristretto"
+	"github.com/captainzidgel/rgl"
 )
 
 type User struct {
@@ -36,6 +38,7 @@ type User struct {
 		Medium string
 		Full string
 	}
+	Ban *ban
 }
 
 //a Json object for loading your sql configuration. The fields are just named user, pass, addr, dbName
@@ -46,16 +49,61 @@ type sqlConfig struct {
 	DbName string
 }
 
+var cache *ristretto.Cache
+
 func singleSummary(id string) (steamweb.PlayerSummary, error) {
 	sid, err := steamid.StringToSID64(id)
 	if err != nil {
 		return steamweb.PlayerSummary{}, err
 	}
-	sums, err := steamweb.PlayerSummaries([]steamid.SID64{sid})
-	if err != nil {
-		return steamweb.PlayerSummary{}, err
+	
+	v, exists := cache.Get("summary" + id)
+	if !exists || v == nil {
+		sums, err := steamweb.PlayerSummaries([]steamid.SID64{sid})
+		if err != nil {
+			return steamweb.PlayerSummary{}, err
+		}
+		ok := cache.SetWithTTL("summary" + id, sums[0], 1, 50 * time.Hour)
+		if !ok {
+			log.Println("Warning: Couldn't set summary in cache")
+		}
+		return sums[0], err
+	} else {
+		log.Println("Cache hit")
+		s := v.(steamweb.PlayerSummary)
+		return s, nil
 	}
-	return sums[0], err
+}
+
+func checkBanCache(id string) *ban {
+	v, exists := cache.Get("ban" + id)
+	if !exists {
+		fmt.Printf("Cache miss: querying ban for %s", id)
+		ban := getBan(id)
+		if ban == nil {
+			fmt.Printf(" (Isn't banned)\n")
+			cache.SetWithTTL("ban" + id, nil, 1, 24 * time.Hour)
+		} else {
+			fmt.Printf(" (Is banned)\n")
+			cache.SetWithTTL("ban" + id, *ban, 1, 48 * time.Hour)
+		}
+		return ban
+	} else {
+		fmt.Printf("Cache hit for ban for %s", id)
+		if v == nil {
+			fmt.Printf(" (Isn't banned)\n")
+			return nil
+		} else {
+			ban := v.(ban)
+			if ban.isActive() {
+				fmt.Printf(" (Is banned)\n")
+				return &ban
+			} else {
+				fmt.Printf(" (Is expired)\n")
+				return nil
+			}
+		}
+	}
 }
 
 func GetUser() gin.HandlerFunc { //middleware to set contextual variable from session
@@ -77,6 +125,10 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 				user.Avatar.Medium = summary.AvatarMedium
 				user.Avatar.Full = summary.AvatarFull
 			}
+			
+			ban := checkBanCache(user.id)
+			user.Ban = ban
+			
 			c.Set("User", user)
 		} else {
 			log.Println("session steamid was nil, not authorizing")
@@ -114,10 +166,13 @@ func newWebServer() *webServer {
 
 var db *sql.DB
 var SelectElo *sql.Stmt
+var r = rgl.DefaultRateLimit()
 func main() {
 	wsHostPtr := flag.String("addr", getOutboundIp(), "Address to listen on (Relayed to clients to know where to send messages to, ie 'localhost' on windows)")
 	portPtr := flag.String("port", "8080", "Port to listen on")
 	flag.Parse()
+	
+	cache = newCache()
 
 	mgeme := newWebServer()
 	
@@ -177,7 +232,17 @@ func main() {
 		if loggedin {
 			id = usr.(User).id
 		}
-		c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
+		if usr.(User).Ban == nil {
+			c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
+		} else {
+			var reason string
+			if usr.(User).Ban.banLevel != -1 {
+				reason = "Baiting/Quitting matches"
+			} else {
+				reason = "League ban"
+			}
+			c.HTML(http.StatusOK, "banned.html", gin.H{"Expires": usr.(User).Ban.expires, "Reason": reason})
+		}
 	})
 	
 	content, err := os.ReadFile("./DbCfg.json")
@@ -211,8 +276,7 @@ func main() {
 	defer UpdateBan.Close()
 	updateBanMethod = updateBanSql
 	selectBanMethod = selectBanSql
-	
-	//AddPlayersTest(118, 14, userHub)
+
 	mgeme.sendQueueToClients()
 	rout.Run(*wsHostPtr + ":" + *portPtr)
 }
@@ -285,7 +349,7 @@ func loadTemplates(dir string) multitemplate.Renderer {
 }
 
 func GetElo(steam64 string) (int) {
-	if strings.Contains(steam64, "FakePlayer") || !strings.HasPrefix(steam64, "7") {
+	if flag.Lookup("test.v") != nil || strings.Contains(steam64, "FakePlayer") || !strings.HasPrefix(steam64, "7") {
 		return 1600
 	}
 	s64 := steamid.ParseString(steam64)[0]	//ParseString returns an array. I like this over SID64FromString because no error testing.

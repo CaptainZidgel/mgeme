@@ -32,14 +32,41 @@ func getBan(steamid string) *ban {
 	if err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("Err selecting ban: %v\n", err)
-		} else {
 			return nil
+		} else {
+			ban, err := getRGLBan(steamid)
+			if err != nil {
+				log.Printf("Err GETting RGL ban: %v\n", err)
+			}
+			return ban
 		}
 	}
 	if !b.isActive() {
 		return nil
 	}
 	return b
+}
+
+func getRGLBan(steamid string) (*ban, error) {
+	//r := DefaultRateLimiter()
+	player, err := r.GetPlayer(steamid)
+	if err != nil {
+		if err.Error() != "Error getting player: 404/Not Found" {
+			return nil, err
+		} else { //Not banned!
+			return nil, nil
+		}
+	}
+	if player.Ban == nil {
+		return nil, nil
+	} else {
+		return &ban{
+			steamid: steamid,
+			expires: player.Ban.EndsGoTime(),
+			banLevel: -1,
+			lastOffence: nil,
+		}, nil
+	}
 }
 
 //This variable can be overwritten in a test to replace time.Now() with whatever time we want
@@ -88,7 +115,12 @@ func (ban *ban) newPenalty() {
 
 func (ban *ban) commitBan() {
 	expire_epoch := ban.expires.Unix()
-	lastoff_epoch := ban.lastOffence.Unix()
+	var lastoff_epoch int64
+	if ban.banLevel > -1 {
+		lastoff_epoch = ban.lastOffence.Unix()
+	} else {
+		lastoff_epoch = 0
+	}
 	err := updateBanMethod(ban.steamid, expire_epoch, ban.banLevel, lastoff_epoch)
 	if err != nil {
 		log.Fatalf("Error updating ban %v", err)

@@ -149,12 +149,15 @@ func TestRejectUnlogged(t *testing.T) {
 
 //A connection with a steamid should be able to open a connection.
 func TestConnect(t *testing.T) {
+	updateBanMethod = updateBanMock
+	selectBanMethod = selectBanMock
+
 	mgeme := newWebServer()
 	sv := createServerHandler(
 		mgeme,
 		defaultErrHandler,
 		t,
-		setDefaultId("FakePlayer123456789"),
+		setDefaultId("76561198292350104"),
 		GetUser(),
 	)
 	
@@ -409,6 +412,28 @@ func TestDelinquency(t *testing.T) {
 	require.NotNil(t, b, "Should get ban")
 	require.Equal(t, now().Add(expireLadder[0]).Truncate(time.Second), b.expires.Truncate(time.Second), "ID A should be banned until now+30 minutes")
 	//I'm using truncate here even though in other tests I may prefer to compare time.Time to time.Time, because actually waiting on messages being sent produces slight differences in times.
+}
+
+func TestBans(t *testing.T) {
+	selectBanMethod = selectBanMock
+	updateBanMethod = updateBanMock
+	
+	cache = newCache()
+
+	punishDelinquents([]string{"76561198292350104"})
+	jb := checkBanCache("76561198011940487")
+	require.NotNil(t, jb, "Should get league ban (uncached)")
+	gb := checkBanCache("76561198292350104")
+	require.NotNil(t, gb, "Should get penalty ban (uncached)")
+	zb := checkBanCache("76561198098770013")
+	require.Nil(t, zb, "Shouldn't get ban (uncached")
+	///////////////////////////////////
+	jb = checkBanCache("76561198011940487")
+	require.NotNil(t, jb, "Should get league ban (cached)")
+	gb = checkBanCache("76561198292350104")
+	require.NotNil(t, gb, "Should get penalty ban (cached)")
+	zb = checkBanCache("76561198098770013")
+	require.Nil(t, zb, "Shouldn't get ban (cached")
 }
 
 //TODO
