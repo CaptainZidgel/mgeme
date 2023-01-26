@@ -80,14 +80,19 @@ func checkBanCache(id string) *ban {
 	if !exists {
 		fmt.Printf("Cache miss: querying ban for %s", id)
 		ban := getBan(id)
-		if ban == nil || !ban.isActive() {
+		if ban == nil {
 			fmt.Printf(" (Isn't banned)\n")
-			cache.SetWithTTL("ban" + id, nil, 1, 24 * time.Hour)
+			cache.SetWithTTL("ban" + id, nil, 1, 24 * time.Hour) //Use *ban to dereference pointer. just store the actual ban.
+			return nil
 		} else {
-			fmt.Printf(" (Is banned)\n")
-			cache.SetWithTTL("ban" + id, *ban, 1, 48 * time.Hour)
+			if ban.isActive() {
+				fmt.Printf(" (Is banned)\n")
+			} else {
+				fmt.Printf(" (Is expired)\n")
+			}
+			cache.SetWithTTL("ban" + id, *ban, 1, 24 * time.Hour)
+			return ban
 		}
-		return ban
 	} else {
 		fmt.Printf("Cache hit for ban for %s", id)
 		if v == nil {
@@ -97,11 +102,10 @@ func checkBanCache(id string) *ban {
 			ban := v.(ban)
 			if ban.isActive() {
 				fmt.Printf(" (Is banned)\n")
-				return &ban
 			} else {
 				fmt.Printf(" (Is expired)\n")
-				return nil
 			}
+			return &ban
 		}
 	}
 }
@@ -232,7 +236,8 @@ func main() {
 		if loggedin {
 			id = usr.(User).id
 		}
-		if usr.(User).Ban == nil {
+		ban := usr.(User).Ban
+		if ban == nil || !ban.isActive() {
 			c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
 		} else {
 			var reason string

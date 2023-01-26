@@ -414,26 +414,41 @@ func TestDelinquency(t *testing.T) {
 	//I'm using truncate here even though in other tests I may prefer to compare time.Time to time.Time, because actually waiting on messages being sent produces slight differences in times.
 }
 
-func TestBans(t *testing.T) {
+func TestCacheBans(t *testing.T) {
 	selectBanMethod = selectBanMock
 	updateBanMethod = updateBanMock
 	
 	cache = newCache()
+	testBanSlice = make([]*ban, 0)
 
 	punishDelinquents([]string{"76561198292350104"})
 	jb := checkBanCache("76561198011940487")
 	require.NotNil(t, jb, "Should get league ban (uncached)")
 	gb := checkBanCache("76561198292350104")
-	require.NotNil(t, gb, "Should get penalty ban (uncached)")
+	require.True(t, gb.isActive(), "Should get active penalty ban (uncached)")
 	zb := checkBanCache("76561198098770013")
 	require.Nil(t, zb, "Shouldn't get ban (uncached")
 	///////////////////////////////////
 	jb = checkBanCache("76561198011940487")
 	require.NotNil(t, jb, "Should get league ban (cached)")
+	require.Equal(t, -1, jb.banLevel, "Shouldn't be leveled")
+	require.True(t, jb.isActive(), "Should be active")
+	
 	gb = checkBanCache("76561198292350104")
 	require.NotNil(t, gb, "Should get penalty ban (cached)")
 	zb = checkBanCache("76561198098770013")
 	require.Nil(t, zb, "Shouldn't get ban (cached")
+	
+	lo := now().Add(-200 * time.Hour)
+	testBanSlice = append(testBanSlice, &ban{
+		steamid: "123",
+		expires: now().Add(-100 * time.Hour),
+		banLevel: 3,
+		lastOffence: &lo,
+	})
+	xtra := checkBanCache("123")
+	require.NotNil(t, xtra, "Should get expired and uncached penalty ban")
+	require.False(t, xtra.isActive(), "Should be expired")
 }
 
 //TODO
