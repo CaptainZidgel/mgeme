@@ -8,6 +8,17 @@ import (
 	"time"
 )
 
+//helper function
+func clearEmpties(s []string) []string {
+	n := make([]string, 0)
+	for x := range(s) {
+		if s[x] != "" {
+			n = append(n, s[x])
+		}
+	}
+	return n
+}
+
 type Message struct { //This is a struct-ambiguous way to receive json messages. The type is used to cast the payload into the right struct.
 	Type string `json:"type"`
 	Payload json.RawMessage `json:"payload"`
@@ -213,14 +224,15 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			}
 			fmt.Printf("Received matchcancel %v\n", res)
 			sv := conn.h.connections[conn].(*gameServer)
-			matchIndex := sv.findMatchByPlayer(res.Delinquents[0])
+			delinquents := clearEmpties(res.Delinquents)
+			matchIndex := sv.findMatchByPlayer(delinquents[0])
 			if matchIndex == -1 {
-				fmt.Println("Couldn't find match with player in it", res.Delinquents[0])
+				fmt.Println("Couldn't find match with player in it", delinquents[0])
 				return nil
 			} else {
 				fmt.Println("Abandonment in match index", matchIndex)
 			}
-			punishDelinquents(res.Delinquents)
+			punishDelinquents(delinquents)
 			for _, player := range w.getPlayerConns(sv.Matches[matchIndex]) {
 				player.sendJSON <- msg
 			}

@@ -28,22 +28,25 @@ type ban struct {
 
 //Get a ban from the database and return a pointer to it
 func getBan(steamid string) *ban {
+	rban, err := getRGLBan(steamid)
+	if err != nil {
+		log.Printf("Err GETting RGL ban: %v\n", err)
+		return nil
+	}
+	if rban != nil { //RGL bans 'supercede' leveled bans, don't search for one
+		rban.commitBan()
+		return rban
+	}
 	b, err := selectBanMethod(steamid)
 	if err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("Err selecting ban: %v\n", err)
 			return nil
-		} else {
-			ban, err := getRGLBan(steamid)
-			if err != nil {
-				log.Printf("Err GETting RGL ban: %v\n", err)
-			}
-			return ban
+		} else { //Received No Rows in sql, not banned
+			return nil
 		}
 	}
-	if !b.isActive() {
-		return nil
-	}
+
 	return b
 }
 
@@ -125,6 +128,7 @@ func (ban *ban) commitBan() {
 	if err != nil {
 		log.Fatalf("Error updating ban %v", err)
 	}
+	cache.SetWithTTL("ban"+ban.steamid, *ban, 1, ban.expires.Sub(now()))
 }
 
 func punishDelinquents(steam64s []string) {
@@ -135,7 +139,7 @@ func punishDelinquents(steam64s []string) {
 		} else {
 			b.newPenalty()
 		}
-		log.Printf("Banning user %s until %v (%f hours) for baiting/quitting\n", id, b.expires, b.expires.Sub(now()).Hours())
+		log.Printf("Banning user %s until %v (%f hours) for baiting/quitting\n", id, b.expires, b.expires.Sub(now()).Hours()) 
 	}
 }
  

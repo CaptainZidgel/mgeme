@@ -80,7 +80,7 @@ func checkBanCache(id string) *ban {
 	if !exists {
 		fmt.Printf("Cache miss: querying ban for %s", id)
 		ban := getBan(id)
-		if ban == nil {
+		if ban == nil || !ban.isActive() {
 			fmt.Printf(" (Isn't banned)\n")
 			cache.SetWithTTL("ban" + id, nil, 1, 24 * time.Hour)
 		} else {
