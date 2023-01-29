@@ -418,13 +418,14 @@ func TestCacheBans(t *testing.T) {
 	selectBanMethod = selectBanMock
 	updateBanMethod = updateBanMock
 	
-	cache = newCache()
+	banCache = newCache()
 	testBanSlice = make([]*ban, 0)
 
 	punishDelinquents([]string{"76561198292350104"})
 	jb := checkBanCache("76561198011940487")
 	require.NotNil(t, jb, "Should get league ban (uncached)")
 	gb := checkBanCache("76561198292350104")
+	require.NotNil(t, gb, "Should get penalty ban (uncached)")
 	require.True(t, gb.isActive(), "Should get active penalty ban (uncached)")
 	zb := checkBanCache("76561198098770013")
 	require.Nil(t, zb, "Shouldn't get ban (uncached")
@@ -449,6 +450,26 @@ func TestCacheBans(t *testing.T) {
 	xtra := checkBanCache("123")
 	require.NotNil(t, xtra, "Should get expired and uncached penalty ban")
 	require.False(t, xtra.isActive(), "Should be expired")
+}
+
+func TestSummaryCache(t *testing.T) {
+	var tests = []struct{
+		player string
+		expected_final_name string
+	}{
+		{"76561198098770013", "Captain Zidgel"},
+		{"76561198292350104", "Gibby from iCarly"},
+	}
+	
+	for _, tt := range tests {
+		_, err := getRGLSummary(tt.player)
+		require.NoErrorf(t, err, "Should get RGL Summary instead of err %v", err)
+		_, err = getSteamSummary(tt.player)
+		require.NoErrorf(t, err, "Should get Steam Summary instead of err %v", err)
+		
+		final := getTotalSummary(tt.player)
+		require.Equal(t, tt.expected_final_name, final.PersonaName, "Should have correct name")
+	}
 }
 
 //TODO

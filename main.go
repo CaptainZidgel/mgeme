@@ -49,66 +49,9 @@ type sqlConfig struct {
 	DbName string
 }
 
-var cache *ristretto.Cache
-
-func singleSummary(id string) (steamweb.PlayerSummary, error) {
-	sid, err := steamid.StringToSID64(id)
-	if err != nil {
-		return steamweb.PlayerSummary{}, err
-	}
-	
-	v, exists := cache.Get("summary" + id)
-	if !exists || v == nil {
-		sums, err := steamweb.PlayerSummaries([]steamid.SID64{sid})
-		if err != nil {
-			return steamweb.PlayerSummary{}, err
-		}
-		ok := cache.SetWithTTL("summary" + id, sums[0], 1, 50 * time.Hour)
-		if !ok {
-			log.Println("Warning: Couldn't set summary in cache")
-		}
-		return sums[0], err
-	} else {
-		log.Println("Cache hit")
-		s := v.(steamweb.PlayerSummary)
-		return s, nil
-	}
-}
-
-func checkBanCache(id string) *ban {
-	v, exists := cache.Get("ban" + id)
-	if !exists {
-		fmt.Printf("Cache miss: querying ban for %s", id)
-		ban := getBan(id)
-		if ban == nil {
-			fmt.Printf(" (Isn't banned)\n")
-			cache.SetWithTTL("ban" + id, nil, 1, 24 * time.Hour) //Use *ban to dereference pointer. just store the actual ban.
-			return nil
-		} else {
-			if ban.isActive() {
-				fmt.Printf(" (Is banned)\n")
-			} else {
-				fmt.Printf(" (Is expired)\n")
-			}
-			cache.SetWithTTL("ban" + id, *ban, 1, 24 * time.Hour)
-			return ban
-		}
-	} else {
-		fmt.Printf("Cache hit for ban for %s", id)
-		if v == nil {
-			fmt.Printf(" (Isn't banned)\n")
-			return nil
-		} else {
-			ban := v.(ban)
-			if ban.isActive() {
-				fmt.Printf(" (Is banned)\n")
-			} else {
-				fmt.Printf(" (Is expired)\n")
-			}
-			return &ban
-		}
-	}
-}
+var steamCache *ristretto.Cache
+var rglCache *ristretto.Cache
+var banCache *ristretto.Cache
 
 func GetUser() gin.HandlerFunc { //middleware to set contextual variable from session
 	return func(c *gin.Context) {
@@ -118,17 +61,13 @@ func GetUser() gin.HandlerFunc { //middleware to set contextual variable from se
 			user.id = id.(string)
 			user.elo = GetElo(user.id)
 			log.Println("Authorizing user with steamid", user.id)
-			summary, err := singleSummary(user.id)
-			if err != nil {
-				log.Printf("Error getting user summary for id %s : %v\n", user.id, err)
-			} else {
-				//log.Printf("Got summary %v\n", summary)
-				user.summary = summary
-				user.Nickname = summary.PersonaName
-				user.Avatar.Small = summary.Avatar
-				user.Avatar.Medium = summary.AvatarMedium
-				user.Avatar.Full = summary.AvatarFull
-			}
+			summary := getTotalSummary(user.id)
+		
+			//user.summary = summary
+			user.Nickname = summary.PersonaName
+			user.Avatar.Small = summary.Avatar
+			user.Avatar.Medium = summary.AvatarMedium
+			user.Avatar.Full = summary.AvatarFull
 			
 			ban := checkBanCache(user.id)
 			user.Ban = ban
@@ -176,7 +115,9 @@ func main() {
 	portPtr := flag.String("port", "8080", "Port to listen on")
 	flag.Parse()
 	
-	cache = newCache()
+	steamCache = newCache()
+	rglCache = newCache()
+	banCache = newCache()
 
 	mgeme := newWebServer()
 	
@@ -233,10 +174,13 @@ func main() {
 	rout.GET("/queue", func(c *gin.Context) {
 		usr, loggedin := c.Get("User")
 		var id string
+		var ban *ban
 		if loggedin {
-			id = usr.(User).id
+			user := usr.(User)
+			id = user.id
+			ban = user.Ban
+			log.Println("User name:", user.Nickname)
 		}
-		ban := usr.(User).Ban
 		if ban == nil || !ban.isActive() {
 			c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
 		} else {

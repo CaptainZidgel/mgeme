@@ -4,6 +4,7 @@ import (
 	"log"
 	"database/sql"
 	"time"
+	"github.com/captainzidgel/rgl"
 )
 
 /*
@@ -28,14 +29,17 @@ type ban struct {
 
 //Get a ban from the database and return a pointer to it
 func getBan(steamid string) *ban {
-	rban, err := getRGLBan(steamid)
+	player, err := getRGLSummary(steamid)
 	if err != nil {
-		log.Printf("Err GETting RGL ban: %v\n", err)
+		log.Printf("Err GETting RGL summary: %v\n", err)
 		return nil
 	}
-	if rban != nil { //RGL bans 'supercede' leveled bans, don't search for one
-		rban.commitBan()
-		return rban
+	if player != nil {
+		rban := getRGLBan(*player)
+		if rban != nil { //RGL bans 'supercede' leveled bans, don't search for one
+			rban.commitBan()
+			return rban
+		}
 	}
 	b, err := selectBanMethod(steamid)
 	if err != nil {
@@ -50,25 +54,16 @@ func getBan(steamid string) *ban {
 	return b
 }
 
-func getRGLBan(steamid string) (*ban, error) {
-	//r := DefaultRateLimiter()
-	player, err := r.GetPlayer(steamid)
-	if err != nil {
-		if err.Error() != "Error getting player: 404/Not Found" {
-			return nil, err
-		} else { //Not banned!
-			return nil, nil
-		}
-	}
+func getRGLBan(player rgl.Player) (*ban) {
 	if player.Ban == nil {
-		return nil, nil
+		return nil
 	} else {
 		return &ban{
-			steamid: steamid,
+			steamid: player.SteamId,
 			expires: player.Ban.EndsGoTime(),
 			banLevel: -1,
 			lastOffence: nil,
-		}, nil
+		}
 	}
 }
 
@@ -116,24 +111,29 @@ func (ban *ban) newPenalty() {
 	ban.commitBan() //write to database
 }
 
-func (ban *ban) commitBan() {
-	expire_epoch := ban.expires.Unix()
+func (b *ban) commitBan() {
+	expire_epoch := b.expires.Unix()
 	var lastoff_epoch int64
-	if ban.banLevel > -1 {
-		lastoff_epoch = ban.lastOffence.Unix()
+	if b.banLevel > -1 {
+		lastoff_epoch = b.lastOffence.Unix()
 	} else {
 		lastoff_epoch = 0
 	}
-	err := updateBanMethod(ban.steamid, expire_epoch, ban.banLevel, lastoff_epoch)
+	err := updateBanMethod(b.steamid, expire_epoch, b.banLevel, lastoff_epoch)
 	if err != nil {
 		log.Fatalf("Error updating ban %v", err)
 	}
-	cache.SetWithTTL("ban"+ban.steamid, *ban, 1, ban.expires.Sub(now()))
+	bruh := b.expires.Sub(now())
+	log.Println("Sanity check", b.steamid, b.expires.Sub(now()))
+	ok := banCache.SetWithTTL("ban"+b.steamid, *b, 1, bruh)
+	if !ok {
+		log.Println("Warning: Couldn't set cache at ban commit")
+	}
 }
 
 func punishDelinquents(steam64s []string) {
 	for _, id := range steam64s {
-		b := getBan(id)
+		b := checkBanCache(id)
 		if b == nil {
 			b = createBan(id, true)
 		} else {
