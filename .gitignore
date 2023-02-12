@@ -3,3 +3,4 @@ go.sum
 *.exe
 mgeme
 *.swp
+whitelist.txt

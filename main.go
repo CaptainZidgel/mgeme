@@ -122,7 +122,12 @@ func main() {
 
 	wsHostPtr := flag.String("addr", getOutboundIp(), "Address to listen on (Relayed to clients to know where to send messages to, ie 'localhost' on windows)")
 	portPtr := flag.String("port", "8080", "Port to listen on")
+	wlePtr := flag.Bool("whitelist", false, "Use a friend-based whitelist")
 	flag.Parse()
+	whitelistEnabled = *wlePtr
+	if whitelistEnabled {
+		whitelist = loadWhitelist()
+	}
 	
 	steamCache = newCache()
 	rglCache = newCache()
@@ -190,16 +195,22 @@ func main() {
 			ban = user.Ban
 			log.Println("User name:", user.Nickname)
 		}
-		if ban == nil || !ban.isActive() {
+		if !loggedin ||((ban == nil || !ban.isActive()) && (!whitelistEnabled || (isWhitelisted(id)))) {
 			c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
 		} else {
 			var reason string
-			if usr.(User).Ban.banLevel != -1 {
-				reason = "Baiting/Quitting matches"
+			expires := time.Now().Add(10000 * time.Hour)
+			if ban != nil && ban.isActive() {
+				expires = ban.expires
+				if ban.banLevel != -1 {
+					reason = "Baiting/Quitting matches"
+				} else {
+					reason = "League ban"
+				}
 			} else {
-				reason = "League ban"
+				reason = "Whitelist mode is enabled and you are not permitted. If you think this is incorrect, please contact the site manager"
 			}
-			c.HTML(http.StatusOK, "banned.html", gin.H{"Expires": usr.(User).Ban.expires, "Reason": reason})
+			c.HTML(http.StatusOK, "banned.html", gin.H{"Expires": expires, "Reason": reason})
 		}
 	})
 	
@@ -219,7 +230,7 @@ func main() {
 	if err != nil { log.Fatal("Error connecting to sql: ", err) }
 	defer db.Close()
 	
-	_, err = db.Exec("CREATE TABLE IF NOT EXISTS bans(steam64 TEXT NOT NULL, expires BIGINT NOT NULL, level INT, lastOffence BIGINT)")
+	_, err = db.Exec("CREATE TABLE IF NOT EXISTS bans(steam64 VARCHAR(20) PRIMARY KEY NOT NULL, expires BIGINT NOT NULL, level INT, lastOffence BIGINT)")
 	if err != nil { log.Println(err) } //likely "no create permissions"
 	
 	SelectElo, err = db.Prepare("SELECT rating FROM mgemod_stats WHERE steamid = ?")
