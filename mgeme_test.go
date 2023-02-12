@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"github.com/stretchr/testify/require"
 	"sync"
+	"os"
 )
 
 func makeWsURL(server *httptest.Server, endpoint string) string {
@@ -23,7 +24,7 @@ func readWaitFor(ws *websocket.Conn, ty string, t *testing.T, logDiscards bool) 
 	for {
 		_, m, rerr := ws.ReadMessage()
 		if rerr != nil {
-			t.Fatalf("Error reading json in test: %v", rerr)
+			t.Fatalf("Error reading json in test: %v\n", rerr)
 		}
 		if strings.Contains(string(m[:]), ty) {
 			return m
@@ -102,18 +103,30 @@ func createOneUser(t *testing.T, server *httptest.Server, withId string) *websoc
 	return userConn
 }
 
-func createServerAndGameConns(handler http.Handler, t *testing.T) (*websocket.Conn, *httptest.Server) {
+func createServer(handler http.Handler) *httptest.Server {
 	server := httptest.NewServer(handler)
+	return server
+}
+
+func createGameConn(t *testing.T, server *httptest.Server, writeHello bool) *websocket.Conn {
 	wsURL := makeWsURL(server, "")
 	
 	gameConn, _, err := websocket.DefaultDialer.Dial(wsURL + "server", nil)
 	require.NoErrorf(t, err, "Error dialing server endpoint %v", err)
+	if writeHello {
+		err = gameConn.WriteJSON(WrapMessage("ServerHello", ServerHelloWorld{Secret: os.Getenv("MGEME_SV_SECRET"), ServerNum: "1", ServerHost: "FakeHost"}, t))
+		require.NoErrorf(t, err, "Error writing server-hello %v", err)
+		
+		_ = readWaitFor(gameConn, "ServerAck", t, false)
+		t.Log("Gameconn acknowledged")
+	}
+	return gameConn
+}
+
+func createServerAndGameConns(t *testing.T, handler http.Handler, writeHello bool) (*websocket.Conn, *httptest.Server) {
+	server := createServer(handler)
+	gameConn := createGameConn(t, server, writeHello)
 	
-	err = gameConn.WriteJSON(WrapMessage("ServerHello", ServerHelloWorld{ServerNum: "1", ServerHost: "FakeHost"}, t))
-	require.NoErrorf(t, err, "Error writing server-hello %v", err)
-	
-	_ = readWaitFor(gameConn, "ServerAck", t, false)
-	t.Log("Gameconn acknowledged")
 	return gameConn, server
 }
 
@@ -201,7 +214,7 @@ func TestReadyUp(t *testing.T) {
 			mgeme := newWebServer()
 			sv := createServerHandler(mgeme, defaultErrHandler, t)
 				
-			gameConn, server := createServerAndGameConns(sv, t)
+			gameConn, server := createServerAndGameConns(t, sv, true)
 
 			wsConnA := createOneUser(t, server, "Luigi")
 			wsConnB := createOneUser(t, server, "Mario")
@@ -376,7 +389,7 @@ func TestDelinquency(t *testing.T) {
 		GetUser(),
 	)
 
-	gameConn, server := createServerAndGameConns(sv, t)
+	gameConn, server := createServerAndGameConns(t, sv, true)
 	defer gameConn.Close()
 	defer server.Close()
 
@@ -482,3 +495,61 @@ func TestAssignArena(t *testing.T) {
 	}
 }
 */
+
+func TestFailServerHello(t *testing.T) {
+	mgeme := newWebServer()
+	sv := createServerHandler(
+		mgeme,
+		defaultErrHandler,
+		t,
+	)
+
+	gameConn, server := createServerAndGameConns(t, sv, false)
+	defer gameConn.Close()
+	defer server.Close()
+	
+	err := gameConn.WriteJSON(WrapMessage("MatchResults", MatchResults{Winner: "I won!", Loser: "You lose!", Finished: true}, t))
+	require.NoErrorf(t, err, "JSON Writing error %v", err)
+	
+	m := readWaitFor(gameConn, "Error", t, true) //The queue is always sent after connecting. We want to receive this
+	var e ErrorJson
+	err = json.Unmarshal(m, &e)
+	require.NoErrorf(t, err, "Could not read msg: %v", err)
+	require.Equal(t, NewJsonError("Must receive ServerHello"), e, "Should receive 'must receive serverhello'")
+	
+	sh := ServerHelloWorld{
+		Secret: "badSecret",
+		ServerNum: "1",
+		ServerHost: "1.2.3.4",
+		ServerPort: "12345",
+		StvPort: "12345",
+	}
+	
+	err = gameConn.WriteJSON(WrapMessage("ServerHello", sh, t))
+	require.NoErrorf(t, err, "JSON Writing error %v", err)
+	
+	m = readWaitFor(gameConn, "Error", t, true) //The queue is always sent after connecting. We want to receive this
+	err = json.Unmarshal(m, &e)
+	require.NoErrorf(t, err, "Could not read msg: %v", err)
+	require.Equal(t, NewJsonError("Authorization failed"), e, "Should receive rejected thing idk")
+	//For some reason, sends after the connection is closed don't error? So the actual client needs to be aware of what they're sending and receiving (no duh)
+	//Reinit the gameConn to test correctly authing
+	
+	newconn := createGameConn(t, server, false)
+	defer newconn.Close()
+	sh.Secret = os.Getenv("MGEME_SV_SECRET")
+	err = newconn.WriteJSON(WrapMessage("ServerHello", sh, t))
+	require.NoErrorf(t, err, "JSON writing error %v", err)
+	
+	cond := func() bool {
+		_, o := mgeme.gameServerHub.findConnection("1")
+		if o != nil && o != struct{}{} {
+			_, ok := o.(*gameServer)
+			if ok {
+				return true
+			}
+		}
+		return false
+	}
+	require.Eventuallyf(t, cond, time.Second, 10*time.Millisecond, "Game server should be found validated")
+}

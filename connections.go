@@ -21,7 +21,7 @@ func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn, webserver 
 	defer wg.Done()
 	for {
 		var jmsg Message
-		err := conn.ReadJSON(&jmsg)
+		err := conn.ReadJSON(&jmsg) //This error would come from reading a message. Usually a websocket error.
 		if err != nil {
 			fmt.Printf("Error reading json for %s ID %s: ", c.h.hubType, c.id)
 			if websocket.IsCloseError(err, 1001) {
@@ -60,10 +60,15 @@ func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn, webserver 
 			}
 			continue
 		}
+		//The errors down below are actually sent by the webserver to the sender, based on the sender making a bad request or something. (Ie the message was actually read by Go properly, but not what the webserver wanted)
 		herr := webserver.HandleMessage(jmsg, c.id, c)
 		if herr != nil {
-			fmt.Printf("Received err handling message %v: %v", jmsg, herr)
-			c.sendText <- []byte(herr.Error()) //This echos errors back to the sender. Need to update this as its nonfunctional atm.
+			fmt.Printf("Received err handling message type %v %v: %v\n", jmsg.Type, string(jmsg.Payload), herr)
+			c.sendJSON <- NewJsonError(herr.Error())
+			if herr.Error() == "Authorization failed" {
+				c.h.removeConnection(c)  //this breaks the writer loop
+				break
+			}
 		}
 	}
 }
@@ -72,7 +77,10 @@ func (c *connection) writer(wg *sync.WaitGroup, conn *websocket.Conn) {
 	defer wg.Done()
 	for {
 		select {
-			case payload := <- c.sendJSON:
+			case payload, ok := <- c.sendJSON:
+				if !ok { //(hub).removeConnection closes this channel, so receives are not ok, break the loop. wsServer will then close the underlying connection.
+					return
+				}
 				err := conn.WriteJSON(payload)
 				if err != nil {
 					break //This only breaks out of the select, not the for.

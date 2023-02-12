@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"time"
+	"os"
 )
 
 //helper function
@@ -46,7 +47,7 @@ type TestMatch struct { //Can't do everything with unit testing! Send a pseudoma
 // Game Server Messages
 ///
 type ServerHelloWorld struct { //Comes from gameserver to initialize connections.
-	ApiKey string `json:"apiKey"`
+	Secret string `json:"secret"`
 	ServerNum string `json:"serverNum"`
 	ServerHost string `json:"serverHost"`
 	ServerPort string `json:"serverPort"`
@@ -74,6 +75,17 @@ type MatchBegan struct {
 
 //MESSAGES WE WILL SEND
 //Our message types are flat (type is a part of payload)
+type ErrorJson struct {
+	Type string `json:"type"`
+	Error string `json:"error"`
+}
+func NewJsonError(msg string) ErrorJson {
+	return ErrorJson{
+		Type: "Error",
+		Error: msg,
+	}
+}
+
 type AckQueue struct {
 	Type string `json:"type"`
 	Queue PlayerEntries `json:"queue"`
@@ -178,67 +190,79 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			return fmt.Errorf("Unknown message type: %s", msg.Type)
 		}
 	} else if connType == "game" { //Ensure user connections can't send server messages
-		if msg.Type == "ServerHello" {
-			var res ServerHelloWorld
-			err := json.Unmarshal(msg.Payload, &res)
-			if err != nil {
-				return fmt.Errorf("Error unmarshaling ServerHello %v: %v", msg.Payload, err)
-			}
-			fmt.Printf("Game Server %s connected\n", res.ServerNum)
-			conn.id = res.ServerNum
-			gs := &gameServer{
-				Info: matchServerInfo{
-					Id: res.ServerNum,
-					Host: res.ServerHost,
-					Port: res.ServerPort,
-					Stv: res.StvPort,
-				},
-				Matches: make(map[int]*Match),
-				Full: false,
-			}
-			conn.h.connections[conn] = gs
-			conn.sendJSON <- newServerAck("") //Let the server know we accepted the connection
-			//TODO: Implement API keying to guarantee game servers are permitted agents. Reject with conn.sendJSON <- newServerAck("Bad API Key")
-		} else if msg.Type == "MatchResults" {
-			var res MatchResults
-			err := json.Unmarshal(msg.Payload, &res)
-			if err != nil {
-				return fmt.Errorf("Error unmarshaling MatchResults %v: %v", msg.Payload, err)
-			}
-			//do something
-			if !res.Finished { //forfeit (punish "res.Loser")
-				punishDelinquents([]string{res.Loser})
-			}
-			sv := conn.h.connections[conn].(*gameServer)
-			matchIndex := sv.findMatchByPlayer(res.Winner)
-			for _, player := range sv.Matches[matchIndex].players {
-				player.Connection.sendJSON <- msg
-			}
-			sv.deleteMatch(matchIndex)
-			fmt.Printf("Received MatchResults from Server %v, finish Mode %t", res, res.Finished)
-		} else if msg.Type == "MatchCancel" {
-			var res MatchCancel
-			err := json.Unmarshal(msg.Payload, &res)
-			if err != nil {
-				return fmt.Errorf("Error unmarshaling MatchCancel %v: %v", msg.Payload, err)
-			}
-			fmt.Printf("Received matchcancel %v\n", res)
-			sv := conn.h.connections[conn].(*gameServer)
-			delinquents := clearEmpties(res.Delinquents)
-			matchIndex := sv.findMatchByPlayer(delinquents[0])
-			if matchIndex == -1 {
-				fmt.Println("Couldn't find match with player in it", delinquents[0])
-				return nil
+		if conn.h.connections[conn] == struct{}{} { //If server hasn't sent serverHello yet
+			if msg.Type == "ServerHello" {
+				var res ServerHelloWorld
+				err := json.Unmarshal(msg.Payload, &res)
+				if err != nil {
+					return fmt.Errorf("Error unmarshaling ServerHello %v: %v", msg.Payload, err)
+				}
+				
+				if res.Secret != os.Getenv("MGEME_SV_SECRET") {
+					log.Println("Warning: Game server connect attempted with bad secret from", res.ServerHost, res.ServerPort)
+					return fmt.Errorf("Authorization failed")
+				}
+				
+				fmt.Printf("Game Server %s connected\n", res.ServerNum)
+				conn.id = res.ServerNum
+				gs := &gameServer{
+					Info: matchServerInfo{
+						Id: res.ServerNum,
+						Host: res.ServerHost,
+						Port: res.ServerPort,
+						Stv: res.StvPort,
+					},
+					Matches: make(map[int]*Match),
+					Full: false,
+				}
+				conn.h.connections[conn] = gs
+				conn.sendJSON <- newServerAck("") //Let the server know we accepted the connection
+				//TODO: Implement API keying to guarantee game servers are permitted agents. Reject with conn.sendJSON <- newServerAck("Bad API Key")
 			} else {
-				fmt.Println("Abandonment in match index", matchIndex)
+				return fmt.Errorf("Must receive ServerHello") //Reject
 			}
-			punishDelinquents(delinquents)
-			for _, player := range w.getPlayerConns(sv.Matches[matchIndex]) {
-				player.sendJSON <- msg
-			}
-			sv.deleteMatch(matchIndex)
 		} else {
-			return fmt.Errorf("Unknown message type: %s", msg.Type)
+			if msg.Type == "MatchResults" {
+				var res MatchResults
+				err := json.Unmarshal(msg.Payload, &res)
+				if err != nil {
+					return fmt.Errorf("Error unmarshaling MatchResults %v: %v", msg.Payload, err)
+				}
+				//do something
+				if !res.Finished { //forfeit (punish "res.Loser")
+					punishDelinquents([]string{res.Loser})
+				}
+				sv := conn.h.connections[conn].(*gameServer)
+				matchIndex := sv.findMatchByPlayer(res.Winner)
+				for _, player := range sv.Matches[matchIndex].players {
+					player.Connection.sendJSON <- msg
+				}
+				sv.deleteMatch(matchIndex)
+				fmt.Printf("Received MatchResults from Server %v, finish Mode %t", res, res.Finished)
+			} else if msg.Type == "MatchCancel" {
+				var res MatchCancel
+				err := json.Unmarshal(msg.Payload, &res)
+				if err != nil {
+					return fmt.Errorf("Error unmarshaling MatchCancel %v: %v", msg.Payload, err)
+				}
+				fmt.Printf("Received matchcancel %v\n", res)
+				sv := conn.h.connections[conn].(*gameServer)
+				delinquents := clearEmpties(res.Delinquents)
+				matchIndex := sv.findMatchByPlayer(delinquents[0])
+				if matchIndex == -1 {
+					fmt.Println("Couldn't find match with player in it", delinquents[0])
+					return nil
+				} else {
+					fmt.Println("Abandonment in match index", matchIndex)
+				}
+				punishDelinquents(delinquents)
+				for _, player := range w.getPlayerConns(sv.Matches[matchIndex]) {
+					player.sendJSON <- msg
+				}
+				sv.deleteMatch(matchIndex)
+			} else {
+				return fmt.Errorf("Unknown message type: %s", msg.Type)
+			}
 		}
 	}
 	return nil

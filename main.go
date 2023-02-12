@@ -111,6 +111,15 @@ var db *sql.DB
 var SelectElo *sql.Stmt
 var r = rgl.DefaultRateLimit()
 func main() {
+	_, steamKeySet := os.LookupEnv("STEAM_TOKEN") //used by github.com/leighmacdonald/steamweb
+	_, serverSecretSet := os.LookupEnv("MGEME_SV_SECRET")
+	if !serverSecretSet {
+		log.Fatal("ERROR: MGEME_SV_SECRET env var not set")
+	}
+	if !steamKeySet {
+		log.Fatal("ERROR: STEAM_TOKEN env var not set")
+	}
+
 	wsHostPtr := flag.String("addr", getOutboundIp(), "Address to listen on (Relayed to clients to know where to send messages to, ie 'localhost' on windows)")
 	portPtr := flag.String("port", "8080", "Port to listen on")
 	flag.Parse()
@@ -383,6 +392,8 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) (error) {
 			delete(w.expectingRup, id)
 			w.erMutex.Unlock()
 		}
+		log.Println("Closing conn")
+		wsConn.WriteControl(websocket.CloseMessage, []byte{}, time.Now().Add(time.Second))
 		wsConn.Close()
 	} else { //Neither a logged in user, not a game server.
 		return fmt.Errorf("Rejecting websocket connection for unloggedin user")
