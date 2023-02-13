@@ -1,11 +1,9 @@
 go 1.18
 
-replace github.com/captainzidgel/rgl => ../rgl
-
 module github.com/captainzidgel/mgeme
 
 require (
-	github.com/captainzidgel/rgl v0.0.0-00010101000000-000000000000
+	github.com/captainzidgel/rgl v0.0.1
 	github.com/dgraph-io/ristretto v0.1.1
 	github.com/gin-contrib/multitemplate v0.0.0-20220829131020-8c2a8441bc2b
 	github.com/gin-contrib/sessions v0.0.5

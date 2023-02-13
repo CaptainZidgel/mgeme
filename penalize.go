@@ -34,8 +34,8 @@ func getBan(steamid string) *ban {
 		log.Printf("Err GETting RGL summary: %v\n", err)
 		return nil
 	}
-	if player != nil {
-		rban := getRGLBan(*player)
+	if player != (rgl.Player{}) {
+		rban := getRGLBan(player)
 		if rban != nil { //RGL bans 'supercede' leveled bans, don't search for one
 			rban.commitBan()
 			return rban
@@ -60,7 +60,7 @@ func getRGLBan(player rgl.Player) (*ban) {
 	} else {
 		return &ban{
 			steamid: player.SteamId,
-			expires: player.Ban.EndsGoTime(),
+			expires: rgl.ToGoTime(player.Ban.Ends),
 			banLevel: -1,
 			lastOffence: nil,
 		}

@@ -385,7 +385,7 @@ func TestDelinquency(t *testing.T) {
 		mgeme,
 		defaultErrHandler,
 		t,
-		setDefaultId("A"),
+		setDefaultId("765611A"),
 		GetUser(),
 	)
 
@@ -398,11 +398,11 @@ func TestDelinquency(t *testing.T) {
 	require.NotNil(t, obj, "Game object should not be nil")
 	gsv := obj.(*gameServer)
 
-	A, _ := mgeme.playerHub.findConnection("A")
+	A, _ := mgeme.playerHub.findConnection("765611A")
 	B, _ := mgeme.playerHub.findConnection("B")
 
 	match := createMatchObject([]PlayerAdded{
-		PlayerAdded{Connection: A, Steamid: "A"}, PlayerAdded{Connection: B, Steamid: "B"},
+		PlayerAdded{Connection: A, Steamid: "765611A"}, PlayerAdded{Connection: B, Steamid: "B"},
 	}, "1")
 	go mgeme.initializeMatch(match)
 
@@ -410,7 +410,7 @@ func TestDelinquency(t *testing.T) {
 	require.Equal(t, 1, len(gsv.Matches), "Should only have 1 match")
 
 	msg := WrapMessage("MatchCancel", MatchCancel{
-		Delinquents: []string{"A"},
+		Delinquents: []string{"765611A"},
 		Arrived: "2",
 		Arena: 1,
 	}, t)
@@ -421,7 +421,7 @@ func TestDelinquency(t *testing.T) {
 	<-tmr.C
 	require.Equal(t, 0, len(gsv.Matches), "Should have deleted all matches")
 	
-	b := getBan("A")
+	b := getBan("765611A")
 	require.NotNil(t, b, "Should get ban")
 	require.Equal(t, now().Add(expireLadder[0]).Truncate(time.Second), b.expires.Truncate(time.Second), "ID A should be banned until now+30 minutes")
 	//I'm using truncate here even though in other tests I may prefer to compare time.Time to time.Time, because actually waiting on messages being sent produces slight differences in times.
@@ -435,11 +435,14 @@ func TestCacheBans(t *testing.T) {
 	testBanSlice = make([]*ban, 0)
 
 	punishDelinquents([]string{"76561198292350104"})
+
 	jb := checkBanCache("76561198011940487")
 	require.NotNil(t, jb, "Should get league ban (uncached)")
+
 	gb := checkBanCache("76561198292350104")
 	require.NotNil(t, gb, "Should get penalty ban (uncached)")
 	require.True(t, gb.isActive(), "Should get active penalty ban (uncached)")
+
 	zb := checkBanCache("76561198098770013")
 	require.Nil(t, zb, "Shouldn't get ban (uncached")
 	///////////////////////////////////
@@ -455,13 +458,15 @@ func TestCacheBans(t *testing.T) {
 	
 	lo := now().Add(-200 * time.Hour)
 	testBanSlice = append(testBanSlice, &ban{
-		steamid: "123",
+		steamid: "76561198098770013",
 		expires: now().Add(-100 * time.Hour),
 		banLevel: 3,
 		lastOffence: &lo,
 	})
-	xtra := checkBanCache("123")
-	require.NotNil(t, xtra, "Should get expired and uncached penalty ban")
+
+	banCache = newCache() //reinit to clear cache
+	xtra := checkBanCache("76561198098770013")
+	require.NotNil(t, xtra, "Should get expired and uncached penalty ban from testBanSlice")
 	require.False(t, xtra.isActive(), "Should be expired")
 }
 

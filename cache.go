@@ -28,27 +28,26 @@ func newCache() *ristretto.Cache {
 
 //v, exists := cache.Get(key)
 
-func getRGLSummary(id string) (*rgl.Player, error) {
+func getRGLSummary(id string) (rgl.Player, error) {
 	player, exists := rglCache.Get(id)
 	if !exists || player == nil {
 		player, err := r.GetPlayer(id)
 		if err == nil {
-			rglCache.SetWithTTL(id, *player, 1, 128 * time.Hour)
+			if player != (rgl.Player{}) { //Found RGL player
+				rglCache.SetWithTTL(id, player, 1, 128 * time.Hour)
+			} else {
+				rglCache.SetWithTTL(id, nil, 1, 48 * time.Hour)
+			}
 			return player, nil
 		} else {
-			rglCache.SetWithTTL(id, nil, 1, 48 * time.Hour)
-			if err.Error() == "Error getting player: 404/Not Found" {
-				return nil, nil
-			} else {
-				return nil, err
-			}
+			return player, err
 		}
 	} else {
 		cast, ok := player.(rgl.Player)
 		if !ok {
 			log.Println("Something went wrong getting player", player)
 		}
-		return &cast, nil
+		return cast, nil
 	}
 }
 
@@ -88,7 +87,7 @@ func getTotalSummary(id string) steamweb.PlayerSummary {
 	if err != nil {
 		log.Printf("Warning: Err getting Steamcomm summary: %v\n", err)
 	}
-	if player != nil {
+	if player != (rgl.Player{}) {
 		summary.PersonaName = player.Name
 	}
 	return summary
@@ -122,8 +121,13 @@ func checkBanCache(id string) *ban {
 	} else {
 		fmt.Printf("Cache hit for ban for %s", id)
 		if v == nil {
-			fmt.Printf(" (Isn't banned)\n")
-			return nil
+			ban := getBan(id)
+			if ban == nil || !ban.isActive() {
+				fmt.Printf(" (Isn't banned)\n")
+			} else {
+				fmt.Printf(" (Is banned)\n")
+			}
+			return ban
 		} else {
 			ban := v.(ban)
 			if ban.isActive() {
