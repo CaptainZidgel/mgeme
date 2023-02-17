@@ -1,0 +1,12 @@
+FROM golang:1.20.0-bullseye
+
+WORKDIR /mgeme
+COPY go.mod ./
+copy go.sum ./
+COPY *.go ./
+COPY views/ ./views/
+
+RUN go mod download
+
+RUN go build -o mgeme
+ENTRYPOINT ["./mgeme"]

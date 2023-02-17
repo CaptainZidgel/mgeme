@@ -1,6 +1,6 @@
-*.json
 go.sum
 *.exe
 mgeme
 *.swp
-whitelist.txt
+config/
+docker/mgeme_config/webconfig.json

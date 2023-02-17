@@ -1,0 +1,19 @@
+{
+	"database": {
+		"user": "mgeme",
+		"pass": "_____",
+		"addr": "xx.xx.xx.xx",
+		"dbName": "sourcemod"
+	},
+	"websocket_expose": {
+		"addr": "xx.xx.xx.xx",
+		"port": "8080"
+	},
+	"whitelistEnabled": true,
+	"whitelist": {
+		"L2": ["765611___________"],
+		"exlude": ["765611_________"]
+	},
+	"STEAM_TOKEN": "____________",
+	"MGEME_SV_SECRET": "_________"
+}

@@ -41,12 +41,23 @@ type User struct {
 	Ban *ban
 }
 
-//a Json object for loading your sql configuration. The fields are just named user, pass, addr, dbName
 type sqlConfig struct {
-	User string	//fields need to be exported to be JSON compatible
-	Pass string
-	Addr string
-	DbName string
+	User string `json:"user"`
+	Pass string `json:"pass"`
+	Addr string `json:"addr"`
+	DbName string `json:"dbName"`
+}
+
+type MMCfg struct {
+	Database sqlConfig `json:"database"`
+	Ws struct {
+		Addr string `json:"addr"`
+		Port string `json:"port"`
+	} `json:"websocket_expose"`
+	WhitelistEnabled bool `json:"whitelistEnabled"`
+	WhitelistRules *map[string][]string `json:"whitelist"`
+	SteamToken string `json:"STEAM_TOKEN"`
+	ServerSecret string `json:"MGEME_SV_SECRET"`
 }
 
 var steamCache *ristretto.Cache
@@ -90,6 +101,8 @@ type webServer struct{
 	
 	expectingRup map[string]bool //I feel like this is too ostentatious for such a small feature but i didnt really feel like redesigning the match storage system.
 	erMutex sync.Mutex //maps aren't thread safe
+
+	svSecret string
 }
 
 func newWebServer() *webServer {
@@ -111,22 +124,22 @@ var db *sql.DB
 var SelectElo *sql.Stmt
 var r = rgl.DefaultRateLimit()
 func main() {
-	_, steamKeySet := os.LookupEnv("STEAM_TOKEN") //used by github.com/leighmacdonald/steamweb
-	_, serverSecretSet := os.LookupEnv("MGEME_SV_SECRET")
-	if !serverSecretSet {
-		log.Fatal("ERROR: MGEME_SV_SECRET env var not set")
-	}
-	if !steamKeySet {
-		log.Fatal("ERROR: STEAM_TOKEN env var not set")
+	//unmarshal configs
+	content, err := os.ReadFile("./config/webconfig.json")
+	if err != nil { log.Fatal("Error opening config: ", err) }
+	var conf MMCfg
+	err = json.Unmarshal(content, &conf)
+	if err != nil { log.Fatal("Error unmarshalling: ", err) }
+	
+	if err := steamweb.SetKey(conf.SteamToken); err != nil {
+		log.Fatal("Error setting steam token: ", err)
 	}
 
-	wsHostPtr := flag.String("addr", getOutboundIp(), "Address to listen on (Relayed to clients to know where to send messages to, ie 'localhost' on windows)")
-	portPtr := flag.String("port", "8080", "Port to listen on")
-	wlePtr := flag.Bool("whitelist", false, "Use a friend-based whitelist")
-	flag.Parse()
-	whitelistEnabled = *wlePtr
-	if whitelistEnabled {
-		whitelist = loadWhitelist()
+	//wsHostPtr := flag.String("addr", getOutboundIp(), "Address to listen on (Relayed to clients to know where to send messages to, ie 'localhost' on windows)")
+	//portPtr := flag.String("port", "8080", "Port to listen on")
+	//flag.Parse()
+	if conf.WhitelistEnabled {
+		whitelist = loadWhitelist(*conf.WhitelistRules)
 	}
 	
 	steamCache = newCache()
@@ -134,6 +147,7 @@ func main() {
 	banCache = newCache()
 
 	mgeme := newWebServer()
+	mgeme.svSecret = conf.ServerSecret
 	
 	rout := gin.Default()
 	rout.HTMLRender = loadTemplates("./views")
@@ -195,8 +209,8 @@ func main() {
 			ban = user.Ban
 			log.Println("User name:", user.Nickname)
 		}
-		if !loggedin ||((ban == nil || !ban.isActive()) && (!whitelistEnabled || (isWhitelisted(id)))) {
-			c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": *wsHostPtr, "wsPort": *portPtr, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
+		if !loggedin ||((ban == nil || !ban.isActive()) && (!conf.WhitelistEnabled || (isWhitelisted(id)))) {
+			c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": conf.Ws.Addr, "wsPort": conf.Ws.Port, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
 		} else {
 			var reason string
 			expires := time.Now().Add(10000 * time.Hour)
@@ -214,18 +228,12 @@ func main() {
 		}
 	})
 	
-	content, err := os.ReadFile("./DbCfg.json")
-	if err != nil { log.Fatal("Error opening database config: ", err) }
-	var conf sqlConfig
-	err = json.Unmarshal(content, &conf)
-	if err != nil { log.Fatal("Error unmarshalling: ", err) }
-	
 	dbCfg := mysql.NewConfig()	//create a new config object with default values
-	dbCfg.User = conf.User		//insert my values into the config object... (username/password for sql user, etc)
-	dbCfg.Passwd = conf.Pass
+	dbCfg.User = conf.Database.User		//insert my values into the config object... (username/password for sql user, etc)
+	dbCfg.Passwd = conf.Database.Pass
 	dbCfg.Net = "tcp"
-	dbCfg.Addr = conf.Addr
-	dbCfg.DBName = conf.DbName
+	dbCfg.Addr = conf.Database.Addr
+	dbCfg.DBName = conf.Database.DbName
 	db, err := sql.Open("mysql", dbCfg.FormatDSN())	//opens a sql connection, the FormatDSN() function turns out config object into a driver string
 	if err != nil { log.Fatal("Error connecting to sql: ", err) }
 	defer db.Close()
@@ -237,17 +245,17 @@ func main() {
 	if err != nil { log.Fatal(err) }
 	defer SelectElo.Close()
 	SelectBan, err = db.Prepare("SELECT expires, level, lastOffence FROM bans WHERE steam64 = ?")
-	if err != nil { log.Println(err) }
+	if err != nil { log.Fatal(err) }
 	defer SelectBan.Close()
 	
 	UpdateBan, err = db.Prepare("INSERT INTO bans (steam64, expires, level, lastOffence) VALUES(?, ?, ?, ?) ON DUPLICATE KEY UPDATE expires=VALUES(expires), level=VALUES(level), lastOffence=VALUES(lastOffence)")
-	if err != nil { log.Println(err) } //likely "no table bans"
+	if err != nil { log.Fatal(err) } //likely "no table bans"
 	defer UpdateBan.Close()
 	updateBanMethod = updateBanSql
 	selectBanMethod = selectBanSql
 
 	mgeme.sendQueueToClients()
-	rout.Run(*wsHostPtr + ":" + *portPtr)
+	rout.Run("0.0.0.0:8080")
 }
 
 //https://stackoverflow.com/questions/23558425/how-do-i-get-the-local-ip-address-in-go

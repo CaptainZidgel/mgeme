@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  db:
+    image: "mysql:latest"
+    command: --init-file /data/application/init.sql
+    volumes:
+      - db-data:/var/lib/mysql
+      - ./init.sql:/data/application/init.sql
+    environment:
+      MYSQL_ROOT_USER: root
+      MYSQL_ROOT_PASSWORD: xxXXxxXX
+    ports:
+      - "3306:3306"
+
+  web:
+    build:
+      context: ../                          #Use build context above this folder
+      dockerfile: docker/Dockerfile_mgeme   #Route from build context to the dockerfile
+    image: "mgeme"                          #When image and build are both specified, build builds to the image name. (image can be used without a build option to use a prebuilt image)
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./mgeme_config/:/mgeme/config/
+
+volumes:
+  db-data:
