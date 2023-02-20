@@ -4,3 +4,4 @@ mgeme
 *.swp
 config/
 docker/mgeme_config/webconfig.json
+internal/

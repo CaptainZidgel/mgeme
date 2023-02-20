@@ -175,7 +175,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			if res.X == "1v1" {
 				m, err := w.dummyMatch()
 				if err != nil { log.Fatalf("%v", err) }
-				go w.sendReadyUpPrompt(m, nil)
+				go w.sendReadyUpPrompt(&m, nil)
 			} else if res.X == "1v_" {
 				m := &Match{
 					Arena: 1,

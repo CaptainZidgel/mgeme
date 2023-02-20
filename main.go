@@ -26,6 +26,7 @@ import (
 	"os"
 	"github.com/dgraph-io/ristretto"
 	"github.com/captainzidgel/rgl"
+	"golang.org/x/exp/maps"
 )
 
 type User struct {
@@ -103,6 +104,8 @@ type webServer struct{
 	erMutex sync.Mutex //maps aren't thread safe
 
 	svSecret string
+	
+	matchmakerStop chan int
 }
 
 func newWebServer() *webServer {
@@ -116,8 +119,52 @@ func newWebServer() *webServer {
 	
 	web.expectingRup = make(map[string]bool)
 	web.erMutex = sync.Mutex{}
+	
+	web.matchmakerStop = make(chan int, 0)
 		
 	return &web
+}
+
+func shouldMatch(a, b PlayerAdded) bool {
+	if (a.WaitTime(now()) + b.WaitTime(now()) >= a.Distance(b)) {
+		return true
+	}
+	if 12 < 10 { //if LOW_PLAYER_MODE ?
+		if a.WaitTime(now()) > 30 || b.WaitTime(now()) > 30 {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *webServer) Matchmaker() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	total:
+	for {
+		out:
+		select {
+		case <-ticker.C:
+			w.queueMutex.RLock()
+			requests := maps.Values(w.gameQueue)
+			w.queueMutex.RUnlock()
+			for i, a := range requests {
+				for ii, b := range requests {
+					if i == ii {
+						continue
+					}
+					if shouldMatch(a, b) {
+						m := []PlayerAdded{a, b}
+						match := w.newMatchFromMatchmaker(m)
+						go w.sendReadyUpPrompt(&match, nil)
+						break out
+					}
+				}
+			}
+		case <-w.matchmakerStop:
+			break total
+		}
+	}
 }
 
 var db *sql.DB
@@ -255,6 +302,7 @@ func main() {
 	selectBanMethod = selectBanSql
 
 	mgeme.sendQueueToClients()
+	go mgeme.Matchmaker()
 	rout.Run("0.0.0.0:8080")
 }
 
@@ -349,6 +397,26 @@ type PlayerAdded struct {
 	//this type seems bare and the map seems unnecessary,
 	//but if i build this out we will need more than 1 value so a key/value map doesnt make sense
 	//example of further properties: maps desired, server location, classes desired
+}
+
+func (pa PlayerAdded) WaitTime(now time.Time) int {
+	d := now.Sub(pa.WaitingSince).Seconds()
+	return int(d)
+}
+
+func (pa PlayerAdded) Location() int {
+	return pa.Elo
+}
+
+func abs(a int) int {
+	if a < 0 {
+		return a * -1
+	}
+	return a
+}
+
+func (pa PlayerAdded) Distance(to PlayerAdded) int {
+	return abs(pa.Location() - to.Location())
 }
 
 type PlayerEntries map[string]PlayerAdded //this is a maptype of PlayerAdded structs. It maps steamids to player data.
@@ -553,7 +621,7 @@ type Match struct {
 	ConnectDeadline int64 `json:"deadline"` //Not set until match initialization. Though this deadline is not used by the server, it will be useful to the client.
 	
 	timer *time.Timer //no json tag!! Don't serialize it!!
-	players []PlayerAdded //unserialized helper thing :)
+	players []PlayerAdded //we embed the entire PlayerAdded object so we can remove them from queue but add them back with data unchanged when necessary
 }
 
 //The match object holds a table of PlayerAdded (queue items) so if the match is cancelled the queue can be restored. However these connections could have died at any point.
@@ -652,10 +720,19 @@ func (w *webServer) getFreeServer() string {
 	*/
 }
 
-func (w *webServer) dummyMatch() (*Match, error) { //change string to SteamID2 type?
+func (w *webServer) newMatchFromMatchmaker(players []PlayerAdded) Match {
+	id := w.getFreeServer()
+	if len(players) > 2 {
+		log.Fatal("Tried to establish match with more than 2 players")
+	}
+	w.removePlayersFromQueue(players)
+	return createMatchObject(players, id)
+}
+
+func (w *webServer) dummyMatch() (Match, error) { //change string to SteamID2 type?
 	players, err := w.fillPlayerSlice(2, false)
 	if err != nil {
-		return nil, err
+		return Match{}, err
 	}
 	
 	id := w.getFreeServer()
@@ -664,9 +741,9 @@ func (w *webServer) dummyMatch() (*Match, error) { //change string to SteamID2 t
 	return createMatchObject(players, id), nil
 }
 
-func createMatchObject(players []PlayerAdded, server string) *Match { //gonna leave server as a param here so I can assign earlier and not return an error here
+func createMatchObject(players []PlayerAdded, server string) Match { //gonna leave server as a param here so I can assign earlier and not return an error here
 	log.Println("Matching together", players[0].Steamid, players[1].Steamid)
-	return &Match{
+	return Match{
 		ServerId: server, 
 		Configuration: make(map[string]string), 
 		P1id: players[0].Steamid,

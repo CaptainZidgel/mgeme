@@ -241,7 +241,7 @@ func TestReadyUp(t *testing.T) {
 			require.NoErrorf(t, err, "Error forming dummy match: %v", err)
 			var wgSendPrompt sync.WaitGroup
 			wgSendPrompt.Add(1)
-			go mgeme.sendReadyUpPrompt(match, &wgSendPrompt)
+			go mgeme.sendReadyUpPrompt(&match, &wgSendPrompt)
 			
 			expected_rs := NewRupSignalMsg(true, false, mgeme.rupTime)
 			msg := readWaitFor(wsConnA, "RupSignal", t, false)
@@ -404,7 +404,7 @@ func TestDelinquency(t *testing.T) {
 	match := createMatchObject([]PlayerAdded{
 		PlayerAdded{Connection: A, Steamid: "765611A"}, PlayerAdded{Connection: B, Steamid: "B"},
 	}, "1")
-	go mgeme.initializeMatch(match)
+	go mgeme.initializeMatch(&match)
 
 	_ = readWaitFor(gameConn, "MatchDetails", t, false)
 	require.Equal(t, 1, len(gsv.Matches), "Should only have 1 match")
@@ -557,4 +557,45 @@ func TestFailServerHello(t *testing.T) {
 		return false
 	}
 	require.Eventuallyf(t, cond, time.Second, 10*time.Millisecond, "Game server should be found validated")
+}
+
+func TestMatchmakerGuarantee(t *testing.T) {
+	var testNow = time.Now()
+	now = func() time.Time {
+		return testNow
+	}
+
+	mgeme := newWebServer()
+	sv := createServerHandler(
+		mgeme,
+		defaultErrHandler,
+		t,
+	)
+
+	gameConn, server := createServerAndGameConns(t, sv, false)
+	defer gameConn.Close()
+	defer server.Close()
+	
+	go mgeme.Matchmaker()
+	
+	A := &connection{
+		id: "A",
+		sendJSON: make(chan interface{}, 1024),
+	}
+	B := &connection{
+		id: "B",
+		sendJSON: make(chan interface{}, 1024),
+	}
+	mgeme.playerHub.addConnection(A)
+	mgeme.playerHub.addConnection(B)
+	mgeme.queueUpdate(true, A)
+	mgeme.queueUpdate(true, B)
+	
+	cond := func() bool {
+		return mgeme.expectingRup["A"] && mgeme.expectingRup["B"]
+	}
+	
+	require.Eventually(t, cond, 5*time.Second, 100 * time.Millisecond) //since A and B both have equal elos (default of 1600) they should be matched basically immediately.
+	
+	mgeme.matchmakerStop <- 1
 }
