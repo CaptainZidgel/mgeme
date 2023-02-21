@@ -5,3 +5,5 @@ mgeme
 config/
 docker/mgeme_config/webconfig.json
 internal/
+docker/init.sql
+docker/screenlog*

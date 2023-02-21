@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"time"
-	"os"
 )
 
 //helper function
@@ -198,7 +197,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 					return fmt.Errorf("Error unmarshaling ServerHello %v: %v", msg.Payload, err)
 				}
 				
-				if res.Secret != os.Getenv("MGEME_SV_SECRET") {
+				if res.Secret != w.svSecret {
 					log.Println("Warning: Game server connect attempted with bad secret from", res.ServerHost, res.ServerPort)
 					return fmt.Errorf("Authorization failed")
 				}
