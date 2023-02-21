@@ -33,10 +33,12 @@
 			{{"{{arrow}}"}}<button v-if="matchDetails == null" v-on:click="joinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
 			<br>
 			<br>
+			{{if .isAdmin}}
 			<button v-on:click="newMatch({X: '1v1'})">Test match (2 real players)</button>
 			<button v-on:click="newMatch({X: '1v_'})">Test match (1 real player) </button>
 			<br>
 			<br>
+			{{end}}
 		</div>
 		<div v-else>
 			<h1>Waiting to connect to server...</h1>
@@ -86,56 +88,57 @@ const app = Vue.createApp({
 		if (this.loggedIn) {
 			this.socket = new WebSocket("ws://{{.wsHost}}:{{.wsPort}}/websock")
 			this.steamid = {{.steamid}}
-		}
-		this.socket.onopen = () => console.log("ws Connection established")
-		this.socket.onclose = function(event) {
-			if (event.wasClean) {
-				console.log(`ws Connection closed, code=${event.code} reason=${event.reason}`);
-			} else {
-				console.log("ws Connection died");
-			}
-		}
-		this.socket.onerror = (error) => console.log(`ws err: ${error.message}`)
-		this.socket.onmessage = (event) => {
-			let data = JSON.parse(event.data)
-			console.log(`Received ${event.data}, ${data.type}.`, this)
 
-			if (data.type == "AckQueue") { //{type: "AckQueue", queue: {steamids: {queue info}} the queue map will eventually be changed to a list
-				let ids = Object.keys(data.queue) //this line should become deprecated before production, i.e. let ids = data.queue
-				this.inQueue = data.isInQueue
-				this.serverQueue = data.queue
-			} else if (data.type == "RupSignal") {
-				let show = data.showPrompt
-				this.rupStatus.showPrompt = show
-				if (show) {
-					this.rupStatus.selfRupped = false
-					this.rupStatus.expireAt = data.expireAt
-					this.updateRupTimeLeft()
-					console.log("Beginning RUP timer")
-					this.rupTimer = setInterval(() => {
+			this.socket.onopen = () => console.log("ws Connection established")
+			this.socket.onclose = function(event) {
+				if (event.wasClean) {
+					console.log(`ws Connection closed, code=${event.code} reason=${event.reason}`);
+				} else {
+					console.log("ws Connection died");
+				}
+			}
+			this.socket.onerror = (error) => console.log(`ws err: ${error.message}`)
+			this.socket.onmessage = (event) => {
+				let data = JSON.parse(event.data)
+				console.log(`Received ${event.data}, ${data.type}.`, this)
+
+				if (data.type == "AckQueue") { //{type: "AckQueue", queue: {steamids: {queue info}} the queue map will eventually be changed to a list
+					let ids = Object.keys(data.queue) //this line should become deprecated before production, i.e. let ids = data.queue
+					this.inQueue = data.isInQueue
+					this.serverQueue = data.queue
+				} else if (data.type == "RupSignal") {
+					let show = data.showPrompt
+					this.rupStatus.showPrompt = show
+					if (show) {
+						this.rupStatus.selfRupped = false
+						this.rupStatus.expireAt = data.expireAt
 						this.updateRupTimeLeft()
+						console.log("Beginning RUP timer")
+						this.rupTimer = setInterval(() => {
+							this.updateRupTimeLeft()
+						}, 1000)
+					}
+				} else if (data.type == "MatchDetails") {
+					this.matchDetails = data
+					this.matchDetails.alive = true
+					this.connectTimeLeft = 180
+					this.connectTimer = setInterval(() => {
+						this.updateConnectTimeLeft()
 					}, 1000)
-				}
-			} else if (data.type == "MatchDetails") {
-				this.matchDetails = data
-				this.matchDetails.alive = true
-				this.connectTimeLeft = 180
-				this.connectTimer = setInterval(() => {
-					this.updateConnectTimeLeft()
-				}, 1000)
-			} else if (data.type == "MatchCancel") {
-				delinq = data.payload.delinquents
-				this.matchDetails.alive = false
-				if (delinq.includes(this.steamid)) {
-					return
-				}
-			} else if (data.type == "ServerIssue") {
-				let code = data.code
-				let level = parseInt(code.toString()[0])
-				this.serviceStatus = {
-					status: level,
-					code: code,
-					msg: data.msg,
+				} else if (data.type == "MatchCancel") {
+					delinq = data.payload.delinquents
+					this.matchDetails.alive = false
+					if (delinq.includes(this.steamid)) {
+						return
+					}
+				} else if (data.type == "ServerIssue") {
+					let code = data.code
+					let level = parseInt(code.toString()[0])
+					this.serviceStatus = {
+						status: level,
+						code: code,
+						msg: data.msg,
+					}
 				}
 			}
 		}
@@ -175,9 +178,9 @@ const app = Vue.createApp({
 			console.log("Sending QUpdate", joining)
 			this.socket.send(JSON.stringify({type: "QueueUpdate", payload: {joining: joining}}))
 		},
-		newMatch(payload) {
+		{{if .isAdmin}}newMatch(payload) {
 			this.socket.send(JSON.stringify({type: "TestMatch", payload: payload}))
-		},
+		},{{end}}
 		readyUp(r) {
 			this.rupStatus.selfRupped = r
 			this.socket.send(JSON.stringify({type: "Ready"}))

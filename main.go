@@ -42,6 +42,10 @@ type User struct {
 	Ban *ban
 }
 
+func isAdmin(user User) bool {
+	return user.id == "76561198098770013"
+}
+
 type sqlConfig struct {
 	User string `json:"user"`
 	Pass string `json:"pass"`
@@ -59,6 +63,7 @@ type MMCfg struct {
 	WhitelistRules *map[string][]string `json:"whitelist"`
 	SteamToken string `json:"STEAM_TOKEN"`
 	ServerSecret string `json:"MGEME_SV_SECRET"`
+	SessionSecret string `json:"SESSION_SECRET"`
 }
 
 var steamCache *ristretto.Cache
@@ -199,7 +204,11 @@ func main() {
 	rout := gin.Default()
 	rout.HTMLRender = loadTemplates("./views")
 
-	store := cookie.NewStore([]byte("SECRET"))
+	store := cookie.NewStore([]byte(conf.SessionSecret))
+	store.Options(sessions.Options{
+		Domain: conf.Ws.Addr,
+		SameSite: http.SameSiteLaxMode,
+	})
 	rout.Use(sessions.Sessions("sessions", store))
 	rout.Use(GetUser())
 	
@@ -210,8 +219,9 @@ func main() {
 	rout.GET("/login", func(c *gin.Context) {
 		loginSteam(c)
 		steamId := sessions.Default(c).Get("steamid")
-		if steamId == "" {
-			log.Fatal("UHHHH")
+		if steamId == nil {
+			c.String(400, "Could not log in")
+			return
 		}
 		c.String(200, steamId.(string))
 	})
@@ -250,14 +260,15 @@ func main() {
 		usr, loggedin := c.Get("User")
 		var id string
 		var ban *ban
+		var user User
 		if loggedin {
-			user := usr.(User)
+			user = usr.(User)
 			id = user.id
 			ban = user.Ban
 			log.Println("User name:", user.Nickname)
 		}
 		if !loggedin ||((ban == nil || !ban.isActive()) && (!conf.WhitelistEnabled || (isWhitelisted(id)))) {
-			c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": conf.Ws.Addr, "wsPort": conf.Ws.Port, "loggedIn": loggedin, "steamid": id, "user": usr}) //clean this up later?
+			c.HTML(http.StatusOK, "queue.html", gin.H{"wsHost": conf.Ws.Addr, "wsPort": conf.Ws.Port, "loggedIn": loggedin, "steamid": id, "user": usr, "isAdmin": isAdmin(user)}) //clean this up later?
 		} else {
 			var reason string
 			expires := time.Now().Add(10000 * time.Hour)
@@ -333,6 +344,7 @@ func loginSteam(c *gin.Context) {
 			steamId, err := opId.ValidateAndGetId() //redirects your user to steam to authenticate, returns their id or an error
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
 			}
 
 			session := sessions.Default(c)
@@ -345,7 +357,7 @@ func loginSteam(c *gin.Context) {
 			//parse original request (r) to see if there was a specific redirect param
 			redir := r.FormValue("redirect")
 			if redir == "queue" {
-				http.Redirect(w, r, "/queue", 301)
+				c.Redirect(302, "/queue")
 			}
 	}
 }

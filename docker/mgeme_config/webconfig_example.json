@@ -15,5 +15,6 @@
 		"exlude": ["765611_________"]
 	},
 	"STEAM_TOKEN": "____________",
-	"MGEME_SV_SECRET": "_________"
+	"MGEME_SV_SECRET": "_________",
+	"SESSION_SECRET": "________"
 }
