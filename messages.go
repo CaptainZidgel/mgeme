@@ -47,7 +47,7 @@ type TestMatch struct { //Can't do everything with unit testing! Send a pseudoma
 // Game Server Messages
 ///
 type ServerHelloWorld struct { //Comes from gameserver to initialize connections.
-	Secret string `json:"secret"`
+	Secret string `json:"apiKey"`
 	ServerNum string `json:"serverNum"`
 	ServerHost string `json:"serverHost"`
 	ServerPort string `json:"serverPort"`
