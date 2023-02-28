@@ -180,25 +180,13 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 					Arena: 1,
 					P1id: steamid,
 					P2id: "FakePlayer",
-					ServerId: "1",
 					players: []PlayerAdded{PlayerAdded{Steamid: steamid, Connection: conn}, PlayerAdded{Steamid: "FakePlayer", Connection: NewFakeConnection()}},
 				}
 				w.initializeMatch(m)
 			} else if res.X == "w" {
-				i := 0
-				players := make([]PlayerAdded, 0)
+				x, _ := json.Marshal(MatchResults{"76561198098770013", "76561198292350104", true})
+				m := Message{Type:"MatchResults", Payload:x}
 				for _, v := range w.gameQueue {
-					i++
-					if i >= 2 {
-						break
-					}
-					w.queueUpdate(false, v.Connection)
-					players = append(players, v)
-				}
-				winner := players[0]
-				loser := players[1]
-				m := MatchResults{winner.Steamid, loser.Steamid, true}
-				for _, v := range players {
 					v.Connection.sendJSON <- m
 				}
 			}

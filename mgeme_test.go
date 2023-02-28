@@ -14,7 +14,24 @@ import (
 	"github.com/stretchr/testify/require"
 	"sync"
 	"os"
+	"github.com/leighmacdonald/steamweb"
 )
+
+func getConfig(t *testing.T) MMCfg {
+	content, err := os.ReadFile("./config/webconfig.json")
+	if err != nil { t.Fatal("Error opening config: ", err) }
+	var conf MMCfg
+	err = json.Unmarshal(content, &conf)
+	if err != nil { t.Fatal("Error unmarshalling: ", err) }
+	return conf
+}
+
+const TestSecret = "01134"
+func newWebServerWithSecret(sec string) *webServer {
+	s := newWebServer()
+	s.svSecret = sec
+	return s
+}
 
 func makeWsURL(server *httptest.Server, endpoint string) string {
 	return "ws" + strings.TrimPrefix(server.URL, "http") + "/" + endpoint
@@ -114,7 +131,7 @@ func createGameConn(t *testing.T, server *httptest.Server, writeHello bool) *web
 	gameConn, _, err := websocket.DefaultDialer.Dial(wsURL + "server", nil)
 	require.NoErrorf(t, err, "Error dialing server endpoint %v", err)
 	if writeHello {
-		err = gameConn.WriteJSON(WrapMessage("ServerHello", ServerHelloWorld{Secret: os.Getenv("MGEME_SV_SECRET"), ServerNum: "1", ServerHost: "FakeHost"}, t))
+		err = gameConn.WriteJSON(WrapMessage("ServerHello", ServerHelloWorld{Secret: TestSecret, ServerNum: "1", ServerHost: "FakeHost", ServerPort: "27015"}, t))
 		require.NoErrorf(t, err, "Error writing server-hello %v", err)
 		
 		_ = readWaitFor(gameConn, "ServerAck", t, false)
@@ -132,7 +149,7 @@ func createServerAndGameConns(t *testing.T, handler http.Handler, writeHello boo
 
 //A connection with no steamid
 func TestRejectUnlogged(t *testing.T) {
-	mgeme := newWebServer()
+	mgeme := newWebServerWithSecret(TestSecret)
 	sv := createServerHandler(
 		mgeme,
 		func(err error, t *testing.T) {
@@ -165,7 +182,7 @@ func TestConnect(t *testing.T) {
 	updateBanMethod = updateBanMock
 	selectBanMethod = selectBanMock
 
-	mgeme := newWebServer()
+	mgeme := newWebServerWithSecret(TestSecret)
 	sv := createServerHandler(
 		mgeme,
 		defaultErrHandler,
@@ -211,7 +228,7 @@ func TestReadyUp(t *testing.T) {
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			mgeme := newWebServer()
+			mgeme := newWebServerWithSecret(TestSecret)
 			sv := createServerHandler(mgeme, defaultErrHandler, t)
 				
 			gameConn, server := createServerAndGameConns(t, sv, true)
@@ -295,6 +312,27 @@ func TestReadyUp(t *testing.T) {
 	}
 }
 
+func TestServerInfo(t *testing.T) {
+	mgeme := newWebServerWithSecret(TestSecret)
+	sv := createServerHandler(
+		mgeme,
+		defaultErrHandler,
+		t,
+	)
+
+	gameConn, server := createServerAndGameConns(t, sv, true)
+	defer gameConn.Close()
+	defer server.Close()
+	
+	m := mgeme.newMatchFromMatchmaker([]PlayerAdded{PlayerAdded{Steamid: "AA"}, PlayerAdded{Steamid: "B"}})
+	mgeme.initializeMatch(&m)
+	msg := readWaitFor(gameConn, "MatchDetails", t, false)
+	var md Match
+	json.Unmarshal(msg, &md)
+	require.NotEmpty(t, md.ServerDetails)
+	require.NotEmpty(t, md.ServerDetails.Host)
+}
+
 
 /*func TestWaitingForPlayersOneGood(t *testing.T) {
 	mgeme := newWebServer()
@@ -376,7 +414,7 @@ func TestDelinquency(t *testing.T) {
 	updateBanMethod = updateBanMock
 	selectBanMethod = selectBanMock
 	
-	mgeme := newWebServer()
+	mgeme := newWebServerWithSecret(TestSecret)
 	mgeme.playerHub.addConnection(&connection{
 		id: "B",
 		sendJSON: make(chan interface{}, 1024),
@@ -401,7 +439,7 @@ func TestDelinquency(t *testing.T) {
 	A, _ := mgeme.playerHub.findConnection("765611A")
 	B, _ := mgeme.playerHub.findConnection("B")
 
-	match := createMatchObject([]PlayerAdded{
+	match := mgeme.createMatchObject([]PlayerAdded{
 		PlayerAdded{Connection: A, Steamid: "765611A"}, PlayerAdded{Connection: B, Steamid: "B"},
 	}, "1")
 	go mgeme.initializeMatch(&match)
@@ -471,6 +509,9 @@ func TestCacheBans(t *testing.T) {
 }
 
 func TestSummaryCache(t *testing.T) {
+	conf := getConfig(t)
+	steamweb.SetKey(conf.SteamToken)
+
 	var tests = []struct{
 		player string
 		expected_final_name string
@@ -502,7 +543,7 @@ func TestAssignArena(t *testing.T) {
 */
 
 func TestFailServerHello(t *testing.T) {
-	mgeme := newWebServer()
+	mgeme := newWebServerWithSecret(TestSecret)
 	sv := createServerHandler(
 		mgeme,
 		defaultErrHandler,
@@ -512,7 +553,7 @@ func TestFailServerHello(t *testing.T) {
 	gameConn, server := createServerAndGameConns(t, sv, false)
 	defer gameConn.Close()
 	defer server.Close()
-	
+	//Attempt to send message without first sending an auth message
 	err := gameConn.WriteJSON(WrapMessage("MatchResults", MatchResults{Winner: "I won!", Loser: "You lose!", Finished: true}, t))
 	require.NoErrorf(t, err, "JSON Writing error %v", err)
 	
@@ -533,7 +574,7 @@ func TestFailServerHello(t *testing.T) {
 	err = gameConn.WriteJSON(WrapMessage("ServerHello", sh, t))
 	require.NoErrorf(t, err, "JSON Writing error %v", err)
 	
-	m = readWaitFor(gameConn, "Error", t, true) //The queue is always sent after connecting. We want to receive this
+	m = readWaitFor(gameConn, "Error", t, true)
 	err = json.Unmarshal(m, &e)
 	require.NoErrorf(t, err, "Could not read msg: %v", err)
 	require.Equal(t, NewJsonError("Authorization failed"), e, "Should receive rejected thing idk")
@@ -542,7 +583,7 @@ func TestFailServerHello(t *testing.T) {
 	
 	newconn := createGameConn(t, server, false)
 	defer newconn.Close()
-	sh.Secret = os.Getenv("MGEME_SV_SECRET")
+	sh.Secret = TestSecret
 	err = newconn.WriteJSON(WrapMessage("ServerHello", sh, t))
 	require.NoErrorf(t, err, "JSON writing error %v", err)
 	
@@ -565,14 +606,14 @@ func TestMatchmakerGuarantee(t *testing.T) {
 		return testNow
 	}
 
-	mgeme := newWebServer()
+	mgeme := newWebServerWithSecret(TestSecret)
 	sv := createServerHandler(
 		mgeme,
 		defaultErrHandler,
 		t,
 	)
 
-	gameConn, server := createServerAndGameConns(t, sv, false)
+	gameConn, server := createServerAndGameConns(t, sv, true)
 	defer gameConn.Close()
 	defer server.Close()
 	

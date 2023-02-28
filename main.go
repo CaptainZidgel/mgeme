@@ -632,7 +632,7 @@ type Match struct {
 	P1id string `json:"p1Id"` //players1 and 2 ids for serialization
 	P2id string `json:"p2Id"`
 	Configuration map[string]string `json:"matchCfg"` //reserved: configuration may be something like "scout vs scout" or "demo vs demo" perhaps modeled as "cfg": "svs" or p1class : p2class
-	ServerId string `json:"gameServer"`
+	ServerDetails matchServerInfo `json:"gameServer"`
 	Status int
 	ConnectDeadline int64 `json:"deadline"` //Not set until match initialization. Though this deadline is not used by the server, it will be useful to the client.
 	
@@ -653,7 +653,12 @@ func (w *webServer) getPlayerConns(m *Match) []*connection {
 
 //Both players ready, send match to server and players.
 func (w *webServer) initializeMatch(m *Match) {
-	c, obj := w.gameServerHub.findConnection(m.ServerId)	//find connection for this id
+	if m.ServerDetails.Id == "" {
+		log.Printf("Warning: Initializing match with empty server details, defaulting to 1")
+		_, obj := w.gameServerHub.findConnection("1")
+		m.ServerDetails = obj.(*gameServer).Info
+	}
+	c, obj := w.gameServerHub.findConnection(m.ServerDetails.Id)	//find connection for this id
 	if c == nil {
 		alertPlayers(200, "Can't connect to game servers...", w.playerHub)
 		log.Println("No server to send match to. Cancelling match")
@@ -742,7 +747,7 @@ func (w *webServer) newMatchFromMatchmaker(players []PlayerAdded) Match {
 		log.Fatal("Tried to establish match with more than 2 players")
 	}
 	w.removePlayersFromQueue(players)
-	return createMatchObject(players, id)
+	return w.createMatchObject(players, id)
 }
 
 func (w *webServer) dummyMatch() (Match, error) { //change string to SteamID2 type?
@@ -754,13 +759,14 @@ func (w *webServer) dummyMatch() (Match, error) { //change string to SteamID2 ty
 	id := w.getFreeServer()
 	//remove players from queue, update queue for all players
 	w.removePlayersFromQueue(players)
-	return createMatchObject(players, id), nil
+	return w.createMatchObject(players, id), nil
 }
 
-func createMatchObject(players []PlayerAdded, server string) Match { //gonna leave server as a param here so I can assign earlier and not return an error here
+func (w *webServer) createMatchObject(players []PlayerAdded, server string) Match { //gonna leave server as a param here so I can assign earlier and not return an error here
 	log.Println("Matching together", players[0].Steamid, players[1].Steamid)
+	_, sv := w.gameServerHub.findConnection(server)
 	return Match{
-		ServerId: server, 
+		ServerDetails: sv.(*gameServer).Info, 
 		Configuration: make(map[string]string), 
 		P1id: players[0].Steamid,
 		P2id: players[1].Steamid,

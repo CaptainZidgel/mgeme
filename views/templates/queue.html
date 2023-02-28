@@ -144,15 +144,15 @@ const app = Vue.createApp({
 					}
 				} else if (data.type == "MatchResults") {
 					this.matchDetails = null
-					this.matchResults = data
-					if (data.finished) {
-						if (data.winner == this.steamid) {
+					this.matchResults = data.payload
+					if (this.matchResults.finished) {
+						if (this.matchResults.winner == this.steamid) {
 							alert("You won! :)")
 						} else {
 							alert("You lost :(")
 						}
 					} else {
-						if (data.winner == this.steamid) {
+						if (this.matchResults.winner == this.steamid) {
 							alert("Your opponent forfeit")
 						} else {
 							alert("You forfeit... why did you do that...?")
