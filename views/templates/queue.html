@@ -11,7 +11,10 @@
 		<button v-on:click="readyUp(true)" v-if="!rupStatus.selfRupped">Ready</button>
 		<p>{{"{{rupTimeLeft}}"}} Seconds Remaining</p>
 	</div>
-		
+	
+	<div id="matchResults" v-if="matchResults != null">
+		<!--<MatchResults winner="matchResults.winner" loser="matchResults.loser"></MatchResults>-->
+	</div>
 	<div id="matchDetails" v-if="matchDetails != null">
 		<div v-if="matchDetails.alive">
 			<p>You're in a match</p>
@@ -36,6 +39,7 @@
 			{{if .isAdmin}}
 			<button v-on:click="newMatch({X: '1v1'})">Test match (2 real players)</button>
 			<button v-on:click="newMatch({X: '1v_'})">Test match (1 real player) </button>
+			<button v-on:click="newMatch({X: 'w'})">Test win/loss</button>
 			<br>
 			<br>
 			{{end}}
@@ -47,14 +51,15 @@
 	<h2>Queue</h2>
 	<ul>
 		<li v-for="value in serverQueue">
-			{{"{{value.Steamid}}"}} :  {{"{{value.User.Nickname}}"}}
+			{{"{{value.User.Nickname}}"}}
 		</li>
 	</ul>
 </div>
-<script>
+<script type="module">
 //const SERVICE_HEALTHY = 0
 //const SERVICE_UNHEALTHY = 1
 //const SERVICE_INTERRUPTED = 2
+//import MatchResults from './matchResultsComponent.js'
 const app = Vue.createApp({
 	data() {
 		return {
@@ -73,6 +78,7 @@ const app = Vue.createApp({
 			connectTimer: null,
 			connectTimeLeft: 0,
 			matchDetails: null,
+			matchResults: null,
 			serviceStatus: {
 				status: 0,
 				code: null,
@@ -82,6 +88,7 @@ const app = Vue.createApp({
 			//Steamid is inherited from the gin template. Sessions are held in server and can't be read by clients (good!). 
 			//However I want to use it sometimes. However a bad actor could change their client data.
 			// So use this variable for some non-important purposes but never send it to the server (the server should use sessions)
+			seenUsers: {}, //the purpose of seenUsers is to 'cache' user summaries like aliases and pfps.
 		}
 	},
 	mounted() { //lifecycle hook 
@@ -106,6 +113,9 @@ const app = Vue.createApp({
 					let ids = Object.keys(data.queue) //this line should become deprecated before production, i.e. let ids = data.queue
 					this.inQueue = data.isInQueue
 					this.serverQueue = data.queue
+					for (let id in data.queue) {
+						this.seenUsers[id] = data.queue[id]
+					}
 				} else if (data.type == "RupSignal") {
 					let show = data.showPrompt
 					this.rupStatus.showPrompt = show
@@ -126,10 +136,27 @@ const app = Vue.createApp({
 						this.updateConnectTimeLeft()
 					}, 1000)
 				} else if (data.type == "MatchCancel") {
-					delinq = data.payload.delinquents
+					let delinq = data.payload.delinquents
 					this.matchDetails.alive = false
 					if (delinq.includes(this.steamid)) {
+						alert("You failed to arrive to the server on time and will be penalized")
 						return
+					}
+				} else if (data.type == "MatchResults") {
+					this.matchDetails = null
+					this.matchResults = data
+					if (data.finished) {
+						if (data.winner == this.steamid) {
+							alert("You won! :)")
+						} else {
+							alert("You lost :(")
+						}
+					} else {
+						if (data.winner == this.steamid) {
+							alert("Your opponent forfeit")
+						} else {
+							alert("You forfeit... why did you do that...?")
+						}
 					}
 				} else if (data.type == "ServerIssue") {
 					let code = data.code

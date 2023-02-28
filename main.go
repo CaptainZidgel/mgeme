@@ -527,6 +527,10 @@ func (w *webServer) queueUpdate(joining bool, conn *connection) { //The individu
 			if !ok {
 				log.Printf("Error casting user to User at queueUpdate.")
 			}
+			if b := checkBanCache(steamid); b != nil && b.isActive() {
+				log.Printf("Attempt to queue by banned user %s\n", steamid)
+				return
+			}
 			w.gameQueue[steamid] = PlayerAdded{Connection: conn, User: user, Steamid: steamid, Elo: GetElo(conn.id), WaitingSince: time.Now()}//steamid//lol
 			log.Printf("Adding %s to queue\n", conn.id)
 	} else { //remove from queue

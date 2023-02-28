@@ -7,3 +7,4 @@ docker/mgeme_config/webconfig.json
 internal/
 docker/init.sql
 docker/screenlog*
+views/templates/matchResultsComponent.js
