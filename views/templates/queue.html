@@ -16,14 +16,15 @@
 		<!--<MatchResults winner="matchResults.winner" loser="matchResults.loser"></MatchResults>-->
 	</div>
 	<div id="matchDetails" v-if="matchDetails != null">
-		<div v-if="matchDetails.alive">
+		<div v-if="matchDetails.status <= STATUS_PLAYING">
 			<p>You're in a match</p>
 			<p>{{"{{grabName(matchDetails.p1Id)}}"}} VS {{"{{grabName(matchDetails.p2Id)}}"}}
 			<p>connect {{"{{matchDetails.gameServer.ip}}"}}:{{"{{matchDetails.gameServer.port}}"}}; password 2p2j</p>
 			<p v-if="matchDetails.waiting">You have {{"{{connectTimeLeft}}"}} seconds left to connect!</p>
 		</div>
 		<div v-else>
-			<p>You have failed to appear for your court date. Shame, shame on you.</p>
+			<p v-if="matchDetails.status == STATUS_DELINQUENT">You have failed to arrive to the server in time and will be penalized.</p>
+			<p v-if="matchDetails.status == STATUS_ENEMY_DELINQUENT">Your opponent has failed to arrive to the server in time and your match has been cancelled. They will be penalized. You may queue again.</p>
 		</div>
 	</div>
 	<div v-if="!loggedIn">
@@ -33,7 +34,7 @@
 	<div v-else>
 		<div v-if="socket && socket.readyState === socket.OPEN">
 			{{/*A quick Go comment for templating: Since Go and Vue both use curly braces, you're going to have to place your vue content in a string inside the Go braces*/}}
-			{{"{{arrow}}"}}<button v-if="matchDetails == null" v-on:click="joinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
+			{{"{{arrow}}"}}<button v-if="matchDetails == null || matchDetails.status <= STATUS_PLAYING" v-on:click="joinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
 			<br>
 			<br>
 			{{if .isAdmin}}
@@ -60,6 +61,12 @@
 //const SERVICE_UNHEALTHY = 1
 //const SERVICE_INTERRUPTED = 2
 //import MatchResults from './matchResultsComponent.js'
+
+const STATUS_WAITING = 0
+const STATUS_PLAYING = 1
+const STATUS_DELINQUENT = 20
+const STATUS_ENEMY_DELINQUENT = 21
+
 const app = Vue.createApp({
 	data() {
 		return {
@@ -129,25 +136,25 @@ const app = Vue.createApp({
 						}, 1000)
 					}
 				} else if (data.type == "MatchDetails") {
-					//this.matchDetails = data
-					this.matchDetails.p1Id = data.p1Id
-					this.matchDetails.p2Id = data.p2Id
-					this.matchDetails.gameServer = data.gameServer
-					this.matchDetails.alive = true
-					this.matchDetails.waiting = true
+					this.matchDetails = {
+						p1Id: data.p1Id,
+						p2Id: data.p2Id,
+						gameServer: data.gameServer,
+						status: STATUS_WAITING,
+					}
 					this.connectTimeLeft = 180
 					this.connectTimer = setInterval(() => {
 						this.updateConnectTimeLeft()
 					}, 1000)
 				} else if (data.type == "MatchBegan") {
-					this.matchDetails.waiting = false
+					this.matchDetails.status = STATUS_PLAYING
 					clearInterval(this.connectTimer)
 				} else if (data.type == "MatchCancel") {
 					let delinq = data.payload.delinquents
-					this.matchDetails.alive = false
 					if (delinq.includes(this.steamid)) {
-						alert("You failed to arrive to the server on time and will be penalized")
-						return
+						this.matchDetails.status = STATUS_DELINQUENT
+					} else {
+						this.matchDetails.status = STATUS_ENEMY_DELINQUENT
 					}
 				} else if (data.type == "MatchResults") {
 					this.matchDetails = null
