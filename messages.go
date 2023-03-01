@@ -225,7 +225,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			} else {
 				return fmt.Errorf("Must receive ServerHello") //Reject
 			}
-		} else {
+		} else { //Server has been authenticated
 			if msg.Type == "MatchResults" {
 				var res MatchResults
 				err := json.Unmarshal(msg.Payload, &res)
@@ -264,6 +264,26 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 					player.sendJSON <- msg
 				}
 				sv.deleteMatch(matchIndex)
+			} else if msg.Type == "MatchBegan" {
+				var res MatchBegan
+				err := json.Unmarshal(msg.Payload, &res)
+				if err != nil {
+					return fmt.Errorf("Error unmarshaling MatchBegan %v: %v", msg.Payload, err)
+				}
+				c1, _ := w.playerHub.findConnection(res.P1)
+				c2, _ := w.playerHub.findConnection(res.P2)
+				if c1 != nil {
+					c1.sendJSON <- msg
+				}
+				if c2 != nil {
+					c2.sendJSON <- msg
+				}
+				m := w.findMatchByPlayer(res.P1)
+				if m == nil {
+					log.Println("MatchBegan... but no match?")
+				} else {
+					m.Status = matchPlaying
+				}
 			} else {
 				return fmt.Errorf("Unknown message type: %s", msg.Type)
 			}

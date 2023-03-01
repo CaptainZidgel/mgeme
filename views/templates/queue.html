@@ -18,9 +18,9 @@
 	<div id="matchDetails" v-if="matchDetails != null">
 		<div v-if="matchDetails.alive">
 			<p>You're in a match</p>
-			<p>{{"{{matchDetails.p1Id}}"}} vs {{"{{matchDetails.p2Id}}"}}</p>
+			<p>{{"{{grabName(matchDetails.p1Id)}}"}} VS {{"{{grabName(matchDetails.p2Id)}}"}}
 			<p>connect {{"{{matchDetails.gameServer.ip}}"}}:{{"{{matchDetails.gameServer.port}}"}}; password 2p2j</p>
-			<p>You have {{"{{connectTimeLeft}}"}} seconds left to connect!
+			<p v-if="matchDetails.waiting">You have {{"{{connectTimeLeft}}"}} seconds left to connect!</p>
 		</div>
 		<div v-else>
 			<p>You have failed to appear for your court date. Shame, shame on you.</p>
@@ -129,12 +129,19 @@ const app = Vue.createApp({
 						}, 1000)
 					}
 				} else if (data.type == "MatchDetails") {
-					this.matchDetails = data
+					//this.matchDetails = data
+					this.matchDetails.p1Id = data.p1Id
+					this.matchDetails.p2Id = data.p2Id
+					this.matchDetails.gameServer = data.gameServer
 					this.matchDetails.alive = true
+					this.matchDetails.waiting = true
 					this.connectTimeLeft = 180
 					this.connectTimer = setInterval(() => {
 						this.updateConnectTimeLeft()
 					}, 1000)
+				} else if (data.type == "MatchBegan") {
+					this.matchDetails.waiting = false
+					clearInterval(this.connectTimer)
 				} else if (data.type == "MatchCancel") {
 					let delinq = data.payload.delinquents
 					this.matchDetails.alive = false
@@ -212,6 +219,9 @@ const app = Vue.createApp({
 			this.rupStatus.selfRupped = r
 			this.socket.send(JSON.stringify({type: "Ready"}))
 		},
+		grabName(id) {
+			return this.seenUsers[id].User.Nickname
+		},
 	},
 	beforeDestroy() {
 		clearInterval(this.rupTimer)
@@ -239,6 +249,10 @@ app.mount("#app")
 	#statusBox {
 		background-color: red;
 		padding: 15px;
+	}
+	
+	#matchDetails {
+		background-color: cyan;
 	}
 </style>
 {{end}}
