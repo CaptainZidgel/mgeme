@@ -20,7 +20,7 @@
 			<p>You're in a match</p>
 			<p>{{"{{grabName(matchDetails.p1Id)}}"}} VS {{"{{grabName(matchDetails.p2Id)}}"}}
 			<p>connect {{"{{matchDetails.gameServer.ip}}"}}:{{"{{matchDetails.gameServer.port}}"}}; password 2p2j</p>
-			<p v-if="matchDetails.waiting">You have {{"{{connectTimeLeft}}"}} seconds left to connect!</p>
+			<p v-if="matchDetails.status == STATUS_WAITING">You have {{"{{connectTimeLeft}}"}} seconds left to connect!</p>
 		</div>
 		<div v-else>
 			<p v-if="matchDetails.status == STATUS_DELINQUENT">You have failed to arrive to the server in time and will be penalized.</p>
@@ -62,11 +62,6 @@
 //const SERVICE_INTERRUPTED = 2
 //import MatchResults from './matchResultsComponent.js'
 
-const STATUS_WAITING = 0
-const STATUS_PLAYING = 1
-const STATUS_DELINQUENT = 20
-const STATUS_ENEMY_DELINQUENT = 21
-
 const app = Vue.createApp({
 	data() {
 		return {
@@ -97,6 +92,12 @@ const app = Vue.createApp({
 			// So use this variable for some non-important purposes but never send it to the server (the server should use sessions)
 			seenUsers: {}, //the purpose of seenUsers is to 'cache' user summaries like aliases and pfps.
 		}
+	},
+	created() { //lifecycle hook for making consts
+		this.STATUS_WAITING = 0
+		this.STATUS_PLAYING = 1
+		this.STATUS_DELINQUENT = 20
+		this.STATUS_ENEMY_DELINQUENT = 21
 	},
 	mounted() { //lifecycle hook 
 		if (this.loggedIn) {
@@ -140,21 +141,22 @@ const app = Vue.createApp({
 						p1Id: data.p1Id,
 						p2Id: data.p2Id,
 						gameServer: data.gameServer,
-						status: STATUS_WAITING,
+						status: this.STATUS_WAITING,
+						deadline: data.deadline,
 					}
 					this.connectTimeLeft = 180
 					this.connectTimer = setInterval(() => {
 						this.updateConnectTimeLeft()
 					}, 1000)
 				} else if (data.type == "MatchBegan") {
-					this.matchDetails.status = STATUS_PLAYING
+					this.matchDetails.status = this.STATUS_PLAYING
 					clearInterval(this.connectTimer)
 				} else if (data.type == "MatchCancel") {
 					let delinq = data.payload.delinquents
 					if (delinq.includes(this.steamid)) {
-						this.matchDetails.status = STATUS_DELINQUENT
+						this.matchDetails.status = this.STATUS_DELINQUENT
 					} else {
-						this.matchDetails.status = STATUS_ENEMY_DELINQUENT
+						this.matchDetails.status = this.STATUS_ENEMY_DELINQUENT
 					}
 				} else if (data.type == "MatchResults") {
 					this.matchDetails = null
@@ -197,9 +199,7 @@ const app = Vue.createApp({
 		updateRupTimeLeft() {
 			let now = this.epoch()
 			let expire = this.rupStatus.expireAt
-			console.log("t:", now, expire)
-			if (expire < now) {
-				console.log("t: clearing")
+			if (expire <= now) {
 				this.rupStatus.showPrompt = false
 				clearInterval(this.rupTimer)
 			} else {
@@ -209,7 +209,7 @@ const app = Vue.createApp({
 		updateConnectTimeLeft() {
 			let now = this.epoch()
 			let expire = this.matchDetails.deadline
-			if (expire - now <= 0) {
+			if (expire <= now) {
 				clearInterval(this.connectTimer)
 			} else {
 				this.connectTimeLeft = expire - now
