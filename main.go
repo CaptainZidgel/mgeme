@@ -118,7 +118,7 @@ func newWebServer() *webServer {
 	web.gameServerHub = newHub("game")
 	web.playerHub = newHub("user")
 	web.gameQueue = make(PlayerEntries)
-	web.rupTime = 5
+	web.rupTime = 35
 	
 	web.queueMutex = sync.RWMutex{}
 	
