@@ -1,10 +1,10 @@
 package main
 
 import (
-	"log"
 	"database/sql"
-	"time"
 	"github.com/captainzidgel/rgl"
+	"log"
+	"time"
 )
 
 /*
@@ -21,9 +21,9 @@ const dayDur = time.Hour * 24
 const weekDur = dayDur * 7
 
 type ban struct {
-	steamid string
-	expires time.Time
-	banLevel int //should be -1 if you're banned for being a cheater and >= 0 for being a baiter
+	steamid     string
+	expires     time.Time
+	banLevel    int //should be -1 if you're banned for being a cheater and >= 0 for being a baiter
 	lastOffence *time.Time
 }
 
@@ -54,14 +54,14 @@ func getBan(steamid string) *ban {
 	return b
 }
 
-func getRGLBan(player rgl.Player) (*ban) {
+func getRGLBan(player rgl.Player) *ban {
 	if player.Ban == nil {
 		return nil
 	} else {
 		return &ban{
-			steamid: player.SteamId,
-			expires: rgl.ToGoTime(player.Ban.Ends),
-			banLevel: -1,
+			steamid:     player.SteamId,
+			expires:     rgl.ToGoTime(player.Ban.Ends),
+			banLevel:    -1,
 			lastOffence: nil,
 		}
 	}
@@ -95,19 +95,19 @@ func (ban *ban) newPenalty() {
 	if ban.banLevel == -1 {
 		return
 	}
-	
-	d := now().Sub(*ban.lastOffence) //the amount of time elapsed since last offence
+
+	d := now().Sub(*ban.lastOffence)      //the amount of time elapsed since last offence
 	weeksSince := int(d.Hours() / 24 / 7) //Convert d to an exact (float) value of weeks, then floor it by casting to int.
-	if weeksSince == 0 {	//Penalized within a week of last offence
-		ban.banLevel = ban.banLevel + 1	//Go to next tier
-	} else {				//Congrats sailor, you went at least a week without offending
-		ban.banLevel = clamp(ban.banLevel - weeksSince, 0, 7)	//If you're at tier x and it's been y weeks since last offence, your new offence will be at tier x-y.
+	if weeksSince == 0 {                  //Penalized within a week of last offence
+		ban.banLevel = ban.banLevel + 1 //Go to next tier
+	} else { //Congrats sailor, you went at least a week without offending
+		ban.banLevel = clamp(ban.banLevel-weeksSince, 0, 7) //If you're at tier x and it's been y weeks since last offence, your new offence will be at tier x-y.
 	}
-	
+
 	t := now()
 	ban.lastOffence = &t
 	ban.expires = ban.lastOffence.Add(expireLadder[ban.banLevel])
-	
+
 	ban.commitBan() //write to database
 }
 
@@ -139,10 +139,10 @@ func punishDelinquents(steam64s []string) {
 		} else {
 			b.newPenalty()
 		}
-		log.Printf("Banning user %s until %v (%f hours) for baiting/quitting\n", id, b.expires, b.expires.Sub(now()).Hours()) 
+		log.Printf("Banning user %s until %v (%f hours) for baiting/quitting\n", id, b.expires, b.expires.Sub(now()).Hours())
 	}
 }
- 
+
 var selectBanMethod func(steamid string) (*ban, error)
 var updateBanMethod func(steamid string, exp_epoch int64, blvl int, lastoff int64) error
 var testBanSlice = make([]*ban, 0)
@@ -154,7 +154,7 @@ func updateBanSql(steamid string, exp_epoch int64, blvl int, lastoff int64) erro
 
 func updateBanMock(steamid string, exp_epoch int64, blvl int, lastoff int64) error {
 	ti := time.Unix(lastoff, 0)
-	testBanSlice = append(testBanSlice, &ban{steamid:steamid, expires: time.Unix(exp_epoch, 0), banLevel: blvl, lastOffence: &ti})
+	testBanSlice = append(testBanSlice, &ban{steamid: steamid, expires: time.Unix(exp_epoch, 0), banLevel: blvl, lastOffence: &ti})
 	return nil
 }
 
@@ -162,16 +162,16 @@ func selectBanSql(steamid string) (*ban, error) {
 	var expire_epoch int64
 	var lastOffence_epoch int64
 	var level int
-	
+
 	err := SelectBan.QueryRow(steamid).Scan(&expire_epoch, &level, &lastOffence_epoch)
 	if err != nil {
 		return nil, err
 	}
 	lo := time.Unix(lastOffence_epoch, 0)
 	b := &ban{
-		steamid: steamid,
-		expires: time.Unix(expire_epoch, 0),
-		banLevel: level,
+		steamid:     steamid,
+		expires:     time.Unix(expire_epoch, 0),
+		banLevel:    level,
 		lastOffence: &lo,
 	}
 	return b, nil

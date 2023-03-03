@@ -4,17 +4,17 @@ package main
 import (
 	"fmt"
 	"sync"
-	
+
 	"github.com/gorilla/websocket"
 )
 
 type connection struct {
-	id string //steamid for users or a To Be Decided for gameservers
-	sendText chan []byte
-	sendJSON chan interface{}
+	id          string //steamid for users or a To Be Decided for gameservers
+	sendText    chan []byte
+	sendJSON    chan interface{}
 	playerReady chan bool
-	h *Hub
-	object interface{}
+	h           *Hub
+	object      interface{}
 }
 
 func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn, webserver *webServer) {
@@ -66,7 +66,7 @@ func (c *connection) reader(wg *sync.WaitGroup, conn *websocket.Conn, webserver 
 			fmt.Printf("Received err handling message type %v %v: %v\n", jmsg.Type, string(jmsg.Payload), herr)
 			c.sendJSON <- NewJsonError(herr.Error())
 			if herr.Error() == "Authorization failed" {
-				c.h.removeConnection(c)  //this breaks the writer loop
+				c.h.removeConnection(c) //this breaks the writer loop
 				break
 			}
 		}
@@ -77,16 +77,16 @@ func (c *connection) writer(wg *sync.WaitGroup, conn *websocket.Conn) {
 	defer wg.Done()
 	for {
 		select {
-			case payload, ok := <- c.sendJSON:
-				if !ok { //(hub).removeConnection closes this channel, so receives are not ok, break the loop. wsServer will then close the underlying connection.
-					return
-				}
-				err := conn.WriteJSON(payload)
-				if err != nil {
-					break //This only breaks out of the select, not the for.
-				}
-			case text := <- c.sendText:
-				conn.WriteMessage(websocket.TextMessage, text)
+		case payload, ok := <-c.sendJSON:
+			if !ok { //(hub).removeConnection closes this channel, so receives are not ok, break the loop. wsServer will then close the underlying connection.
+				return
+			}
+			err := conn.WriteJSON(payload)
+			if err != nil {
+				break //This only breaks out of the select, not the for.
+			}
+		case text := <-c.sendText:
+			conn.WriteMessage(websocket.TextMessage, text)
 		}
 	}
 }

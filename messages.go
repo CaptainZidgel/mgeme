@@ -1,9 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 )
@@ -11,7 +11,7 @@ import (
 //helper function
 func clearEmpties(s []string) []string {
 	n := make([]string, 0)
-	for x := range(s) {
+	for x := range s {
 		if s[x] != "" {
 			n = append(n, s[x])
 		}
@@ -20,10 +20,9 @@ func clearEmpties(s []string) []string {
 }
 
 type Message struct { //This is a struct-ambiguous way to receive json messages. The type is used to cast the payload into the right struct.
-	Type string `json:"type"`
+	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload"`
 }
-
 
 //MESSAGES WE WILL RECEIVE
 //User messages are structured (type, payload are siblings) and decoded from type Message
@@ -46,23 +45,23 @@ type TestMatch struct { //Can't do everything with unit testing! Send a pseudoma
 // Game Server Messages
 ///
 type ServerHelloWorld struct { //Comes from gameserver to initialize connections.
-	Secret string `json:"apiKey"`
-	ServerNum string `json:"serverNum"`
+	Secret     string `json:"apiKey"`
+	ServerNum  string `json:"serverNum"`
 	ServerHost string `json:"serverHost"`
 	ServerPort string `json:"serverPort"`
-	StvPort string `json:"stvPort"`
+	StvPort    string `json:"stvPort"`
 }
 
 type MatchResults struct {
-	Winner string `json:"winner"`
-	Loser string `json:"loser"`
-	Finished bool `json:"finished"` //true = normal finish, false = forfeit
+	Winner   string `json:"winner"`
+	Loser    string `json:"loser"`
+	Finished bool   `json:"finished"` //true = normal finish, false = forfeit
 }
 
 type MatchCancel struct { //called when match is cancelled **before beginning**
 	Delinquents []string `json:"delinquents"`
-	Arrived string `json:"arrived"`
-	Arena int `json:"arena"`
+	Arrived     string   `json:"arrived"`
+	Arena       int      `json:"arena"`
 }
 
 type MatchBegan struct {
@@ -70,36 +69,35 @@ type MatchBegan struct {
 	P2 string `json:"p2"`
 }
 
-
-
 //MESSAGES WE WILL SEND
 //Our message types are flat (type is a part of payload)
 type ErrorJson struct {
-	Type string `json:"type"`
+	Type  string `json:"type"`
 	Error string `json:"error"`
 }
+
 func NewJsonError(msg string) ErrorJson {
 	return ErrorJson{
-		Type: "Error",
+		Type:  "Error",
 		Error: msg,
 	}
 }
 
 type AckQueue struct {
-	Type string `json:"type"`
-	Queue PlayerEntries `json:"queue"`
-	IsInQueue bool `json:"isInQueue"`
+	Type      string        `json:"type"`
+	Queue     PlayerEntries `json:"queue"`
+	IsInQueue bool          `json:"isInQueue"`
 }
 
-func NewAckQueueMsg (queue PlayerEntries, id string) AckQueue {
+func NewAckQueueMsg(queue PlayerEntries, id string) AckQueue {
 	_, ok := queue[id]
 	return AckQueue{Type: "AckQueue", Queue: queue, IsInQueue: ok}
 }
 
 //Sent to server on connect
 type ServerAck struct {
-	Type string `json:"type"`
-	Accept bool `json:"accepted"`
+	Type         string `json:"type"`
+	Accept       bool   `json:"accepted"`
 	RejectReason string `json:"rejectReason"`
 }
 
@@ -120,10 +118,10 @@ type HelloWorld struct {
 }
 
 type RupSignal struct {
-	Type string `json:"type"`
-	ShowPrompt bool `json:"showPrompt"`
-	SelfRupped bool `json:"selfRupped"`
-	ExpireAt int64 `json:"expireAt"`
+	Type       string `json:"type"`
+	ShowPrompt bool   `json:"showPrompt"`
+	SelfRupped bool   `json:"selfRupped"`
+	ExpireAt   int64  `json:"expireAt"`
 }
 
 func NewRupSignalMsg(show bool, selfrupped bool, deadline int) RupSignal { //I should move to this format for all messages sent from Go server so I don't need to rewrite type
@@ -131,10 +129,11 @@ func NewRupSignalMsg(show bool, selfrupped bool, deadline int) RupSignal { //I s
 }
 
 type ServerIssue struct { //Used to communicate with users that something is interrupting the service (ie, a gameserver is down, the webserver is erroring, idk something like that
-	Type string `json:"type"`
-	Code int `json:"code"`
+	Type    string `json:"type"`
+	Code    int    `json:"code"`
 	Message string `json:"msg"`
 }
+
 //Codes: (First digit should relate to severity, 1 being a warning and 2 being a total interruption of service
 //200 - Game servers not available
 
@@ -158,7 +157,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 					return fmt.Errorf("Error unmarshaling QueueUpdate %v: %v", msg.Payload, err)
 				}
 			}
-			w.queueUpdate(res.Joining, conn)	//Update the server's master queue
+			w.queueUpdate(res.Joining, conn) //Update the server's master queue
 		} else if msg.Type == "Ready" {
 			w.erMutex.Lock()
 			if w.expectingRup[conn.id] {
@@ -173,19 +172,21 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			json.Unmarshal(msg.Payload, &res)
 			if res.X == "1v1" {
 				m, err := w.dummyMatch()
-				if err != nil { log.Fatalf("%v", err) }
+				if err != nil {
+					log.Fatalf("%v", err)
+				}
 				go w.sendReadyUpPrompt(&m, nil)
 			} else if res.X == "1v_" {
 				m := &Match{
-					Arena: 1,
-					P1id: steamid,
-					P2id: "FakePlayer",
+					Arena:   1,
+					P1id:    steamid,
+					P2id:    "FakePlayer",
 					players: []PlayerAdded{PlayerAdded{Steamid: steamid, Connection: conn}, PlayerAdded{Steamid: "FakePlayer", Connection: NewFakeConnection()}},
 				}
 				w.initializeMatch(m)
 			} else if res.X == "w" {
 				x, _ := json.Marshal(MatchResults{"76561198098770013", "76561198292350104", true})
-				m := Message{Type:"MatchResults", Payload:x}
+				m := Message{Type: "MatchResults", Payload: x}
 				for _, v := range w.gameQueue {
 					v.Connection.sendJSON <- m
 				}
@@ -201,23 +202,23 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				if err != nil {
 					return fmt.Errorf("Error unmarshaling ServerHello %v: %v", msg.Payload, err)
 				}
-				
+
 				if res.Secret != w.svSecret {
 					log.Println("Warning: Game server connect attempted with bad secret from", res.ServerHost, res.ServerPort)
 					return fmt.Errorf("Authorization failed")
 				}
-				
+
 				fmt.Printf("Game Server %s connected\n", res.ServerNum)
 				conn.id = res.ServerNum
 				gs := &gameServer{
 					Info: matchServerInfo{
-						Id: res.ServerNum,
+						Id:   res.ServerNum,
 						Host: res.ServerHost,
 						Port: res.ServerPort,
-						Stv: res.StvPort,
+						Stv:  res.StvPort,
 					},
 					Matches: make(map[int]*Match),
-					Full: false,
+					Full:    false,
 				}
 				conn.h.connections[conn] = gs
 				conn.sendJSON <- newServerAck("") //Let the server know we accepted the connection

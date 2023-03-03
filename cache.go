@@ -1,21 +1,20 @@
 package main
 
 import (
-	"github.com/dgraph-io/ristretto"
+	"fmt"
 	"github.com/captainzidgel/rgl"
-	"time"
+	"github.com/dgraph-io/ristretto"
 	"github.com/leighmacdonald/steamid/v2/steamid"
 	"github.com/leighmacdonald/steamweb"
 	"log"
-	"fmt"
+	"time"
 )
 
 func newCache() *ristretto.Cache {
 	cache, err := ristretto.NewCache(&ristretto.Config{
 		NumCounters: 10000,
-		MaxCost: 1000, //If i assign every entry a cost of 1, then this means we can hold at most 1000 items.
+		MaxCost:     1000, //If i assign every entry a cost of 1, then this means we can hold at most 1000 items.
 		BufferItems: 64,
-		
 	})
 	if err != nil {
 		panic(err)
@@ -34,9 +33,9 @@ func getRGLSummary(id string) (rgl.Player, error) {
 		player, err := r.GetPlayer(id)
 		if err == nil {
 			if player != (rgl.Player{}) { //Found RGL player
-				rglCache.SetWithTTL(id, player, 1, 128 * time.Hour)
+				rglCache.SetWithTTL(id, player, 1, 128*time.Hour)
 			} else {
-				rglCache.SetWithTTL(id, nil, 1, 48 * time.Hour)
+				rglCache.SetWithTTL(id, nil, 1, 48*time.Hour)
 			}
 			return player, nil
 		} else {
@@ -56,7 +55,7 @@ func getSteamSummary(id string) (steamweb.PlayerSummary, error) {
 	if err != nil {
 		return steamweb.PlayerSummary{}, err
 	}
-	
+
 	v, exists := steamCache.Get(id)
 	if !exists || v == nil {
 		sums, err := steamweb.PlayerSummaries([]steamid.SID64{sid})
@@ -66,7 +65,7 @@ func getSteamSummary(id string) (steamweb.PlayerSummary, error) {
 		}
 		s := sums[0]
 
-		ok := steamCache.SetWithTTL(id, s, 1, 50 * time.Hour)
+		ok := steamCache.SetWithTTL(id, s, 1, 50*time.Hour)
 		if !ok {
 			log.Println("Warning: Couldn't set summary in cache")
 		}
@@ -98,10 +97,10 @@ func checkBanCache(id string) *ban {
 	v, exists := banCache.Get("ban" + id)
 	if !exists {
 		fmt.Printf("Cache miss: querying ban for %s", id) //Use fmt instead of log so each log doesn't begin with Timestamp/force a newline...
-		ban := getBan(id)								  //
-		if ban == nil {									  //
-			fmt.Printf(" (Isn't banned)\n")				  //...this lets us print this stuff to the same line
-			ok := banCache.SetWithTTL("ban" + id, nil, 1, 24 * time.Hour) //Use *ban to dereference pointer. just store the actual ban.
+		ban := getBan(id)                                 //
+		if ban == nil {                                   //
+			fmt.Printf(" (Isn't banned)\n")                           //...this lets us print this stuff to the same line
+			ok := banCache.SetWithTTL("ban"+id, nil, 1, 24*time.Hour) //Use *ban to dereference pointer. just store the actual ban.
 			if !ok {
 				log.Println("Warning: Couldn't set cache for nil ban")
 			}
@@ -112,7 +111,7 @@ func checkBanCache(id string) *ban {
 			} else {
 				fmt.Printf(" (Is expired)\n")
 			}
-			ok := banCache.SetWithTTL("ban" + id, *ban, 1, 24 * time.Hour) //ban is a pointer (*ban), so *(*ban) should dereference and cache the struct
+			ok := banCache.SetWithTTL("ban"+id, *ban, 1, 24*time.Hour) //ban is a pointer (*ban), so *(*ban) should dereference and cache the struct
 			if !ok {
 				log.Println("Warning: Couldn't set cache for ban")
 			}

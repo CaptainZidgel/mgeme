@@ -1,9 +1,9 @@
 package main
 
 import (
-	"log"
 	"github.com/leighmacdonald/steamid/v2/steamid"
 	"github.com/leighmacdonald/steamweb"
+	"log"
 	"strings"
 )
 
@@ -52,7 +52,7 @@ func whitelistAdd(wl wlSet, id steamid.SID64, at_level int) {
 		}
 		for i := range list {
 			friend_sid := list[i].Steamid
-			whitelistAdd(wl, friend_sid, at_level - 1)
+			whitelistAdd(wl, friend_sid, at_level-1)
 		}
 	}
 }
