@@ -1,15 +1,19 @@
-
-{{define "content"}}
+<!DOCTYPE html>
+<html>
 <script src="https://unpkg.com/vue@3"></script>
-<h1>Hi</h1>
+<body>
+<div id="header">
+	%%if .loggedIn%%<span style="float: right">Hi, %%.user.Nickname%%!</span>%%end%%
+</div>
+<h1>Welcome to MGE Me!</h1>
 <div id="app">
 	<div id="statusBox" v-if="serviceStatus.status > 0">
-		<p>{{"{{serviceStatus.msg}}"}}
+		<p>{{serviceStatus.msg}}
 	</div>
 	<div id="rupBox" v-if="rupStatus.showPrompt">
-		<h3>{{"{{rupPromptMessage()}}"}}</h3>
+		<h3>{{rupPromptMessage()}}</h3>
 		<button v-on:click="readyUp(true)" v-if="!rupStatus.selfRupped">Ready</button>
-		<p>{{"{{rupTimeLeft}}"}} Seconds Remaining</p>
+		<p>{{rupTimeLeft}} Seconds Remaining</p>
 	</div>
 	
 	<div id="matchResults" v-if="matchResults != null">
@@ -18,9 +22,9 @@
 	<div id="matchDetails" v-if="matchDetails != null">
 		<div v-if="matchDetails.status <= STATUS_PLAYING">
 			<p>You're in a match</p>
-			<p>{{"{{grabName(matchDetails.p1Id)}}"}} VS {{"{{grabName(matchDetails.p2Id)}}"}}
-			<p>connect {{"{{matchDetails.gameServer.ip}}"}}:{{"{{matchDetails.gameServer.port}}"}}; password 2p2j</p>
-			<p v-if="matchDetails.status == STATUS_WAITING">You have {{"{{connectTimeLeft}}"}} seconds left to connect!</p>
+			<p>{{grabName(matchDetails.p1Id)}} VS {{grabName(matchDetails.p2Id)}}
+			<p>connect {{matchDetails.gameServer.ip}}:{{matchDetails.gameServer.port}}; password 2p2j</p>
+			<p v-if="matchDetails.status == STATUS_WAITING">You have {{connectTimeLeft}} seconds left to connect!</p>
 		</div>
 		<div v-else>
 			<p v-if="matchDetails.status == STATUS_DELINQUENT">You have failed to arrive to the server in time and will be penalized.</p>
@@ -33,17 +37,16 @@
 	</div>
 	<div v-else>
 		<div v-if="socket && socket.readyState === socket.OPEN">
-			{{/*A quick Go comment for templating: Since Go and Vue both use curly braces, you're going to have to place your vue content in a string inside the Go braces*/}}
-			{{"{{arrow}}"}}<button v-if="matchDetails == null || matchDetails.status <= STATUS_PLAYING" v-on:click="joinLeaveQueue(!this.inQueue)">{{"{{inQueueMessage()}}"}}</button>
+			<button v-if="matchDetails == null || matchDetails.status <= STATUS_PLAYING" v-on:click="joinLeaveQueue(!this.inQueue)">{{inQueueMessage()}}</button>
 			<br>
 			<br>
-			{{if .isAdmin}}
+			%%if .isAdmin%%
 			<button v-on:click="newMatch({X: '1v1'})">Test match (2 real players)</button>
 			<button v-on:click="newMatch({X: '1v_'})">Test match (1 real player) </button>
 			<button v-on:click="newMatch({X: 'w'})">Test win/loss</button>
 			<br>
 			<br>
-			{{end}}
+			%%end%%
 		</div>
 		<div v-else>
 			<h1>Waiting to connect to server...</h1>
@@ -52,10 +55,11 @@
 	<h2>Queue</h2>
 	<ul>
 		<li v-for="value in serverQueue">
-			{{"{{value.User.Nickname}}"}}
+			{{value.User.Nickname}}
 		</li>
 	</ul>
 </div>
+</body>
 <script type="module">
 //const SERVICE_HEALTHY = 0
 //const SERVICE_UNHEALTHY = 1
@@ -69,7 +73,7 @@ const app = Vue.createApp({
 			socket: null, //shoutout https://github.com/NerdCademyDev/golang/blob/main/09_web_sockets/client/src/App.vue
 			inQueue: false, //at some point I should implement pinging the server in mounted() to confirm
 			serverQueue: [],
-			loggedIn: {{.loggedIn}}, //Receive loggedIn variable from Go server
+			loggedIn: %%.loggedIn%%, //Receive loggedIn variable from Go server
 			rupStatus: {
 				showPrompt: false,		//show the Ready Up alert to player. if self isn't rupped, show "hi you should ready up"
 				selfRupped: false,	//if self is rupped and partner isn't, show "waiting for partner" (if self is rupped and partner is, the alert would go away anyway)
@@ -101,8 +105,8 @@ const app = Vue.createApp({
 	},
 	mounted() { //lifecycle hook 
 		if (this.loggedIn) {
-			this.socket = new WebSocket("ws://{{.wsHost}}:{{.wsPort}}/websock")
-			this.steamid = {{.steamid}}
+			this.socket = new WebSocket("ws://%%.wsHost%%:%%.wsPort%%/websock")
+			this.steamid = %%.steamid%%
 
 			this.socket.onopen = () => console.log("ws Connection established")
 			this.socket.onclose = function(event) {
@@ -219,9 +223,9 @@ const app = Vue.createApp({
 			console.log("Sending QUpdate", joining)
 			this.socket.send(JSON.stringify({type: "QueueUpdate", payload: {joining: joining}}))
 		},
-		{{if .isAdmin}}newMatch(payload) {
+		%%if .isAdmin%%newMatch(payload) {
 			this.socket.send(JSON.stringify({type: "TestMatch", payload: payload}))
-		},{{end}}
+		},%%end%%
 		readyUp(r) {
 			this.rupStatus.selfRupped = r
 			this.socket.send(JSON.stringify({type: "Ready"}))
@@ -261,5 +265,10 @@ app.mount("#app")
 	#matchDetails {
 		background-color: cyan;
 	}
+	
+	#header {
+		width: 100%;
+		background-color: gray;
+	}
 </style>
-{{end}}
+</html>

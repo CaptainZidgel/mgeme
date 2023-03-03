@@ -5,10 +5,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
-	"github.com/gin-contrib/multitemplate"
 	"log"
 	"fmt"
-	"path/filepath"
 	"github.com/solovev/steam_go"
 	"github.com/gorilla/websocket"
 	"sync"
@@ -202,7 +200,8 @@ func main() {
 	mgeme.svSecret = conf.ServerSecret
 	
 	rout := gin.Default()
-	rout.HTMLRender = loadTemplates("./views")
+	rout.Delims("%%", "%%")
+	rout.LoadHTMLGlob("./views/templates/*")
 
 	store := cookie.NewStore([]byte(conf.SessionSecret))
 	store.Options(sessions.Options{
@@ -360,29 +359,6 @@ func loginSteam(c *gin.Context) {
 				c.Redirect(302, "/queue")
 			}
 	}
-}
-
-func loadTemplates(dir string) multitemplate.Renderer {
-	r := multitemplate.NewRenderer()
-
-	layouts, err := filepath.Glob(dir + "/layouts/*")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	includes, err := filepath.Glob(dir + "/templates/*")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, include := range includes {
-		layoutCopy := make([]string, len(layouts))
-		copy(layoutCopy, layouts)
-		files := append(layoutCopy, include)
-		r.AddFromFiles(filepath.Base(include), files...)
-	}
-
-	return r
 }
 
 func GetElo(steam64 string) (int) {
