@@ -467,7 +467,7 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) error {
 		hub.addConnection(clientConn) //Add our connection to the hub
 		if hubtype == "user" {
 			clientConn.sendJSON <- NewAckQueueMsg(w.gameQueue, id)
-			hub.connections[clientConn] = usr.(User)
+			clientConn.object = usr.(User)
 			w.resolveConnectingUser(clientConn)
 		}
 		defer hub.removeConnection(clientConn)
@@ -496,8 +496,10 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) error {
 //When a user closes or refreshes a tab, that closes the websocket (code 1001, navigated away). I know yet how much info I want to preserve across sessions
 func (w *webServer) resolveConnectingUser(conn *connection) {
 	log.Println("Resolving reconnected user")
+	w.gameServerHub.connectionsMx.Lock()
+	defer w.gameServerHub.connectionsMx.Unlock()
 	for _, server := range w.gameServerHub.connections {
-		server, ok := server.(*gameServer)
+		server, ok := server.object.(*gameServer)
 		if !ok {
 			log.Printf("Couldn't cast serverhub connection to server type %v\n", server)
 		} else {
@@ -525,7 +527,7 @@ func (w *webServer) queueUpdate(joining bool, conn *connection) { //The individu
 	steamid := conn.id
 	w.queueMutex.Lock()
 	if joining { //add to queue
-		user, ok := w.playerHub.connections[conn].(User)
+		user, ok := conn.object.(User)
 		if !ok {
 			log.Printf("Error casting user to User at queueUpdate.")
 		}
@@ -545,7 +547,7 @@ func (w *webServer) queueUpdate(joining bool, conn *connection) { //The individu
 
 func (w *webServer) sendQueueToClients() {
 	w.queueMutex.Lock()
-	for c := range w.playerHub.connections {
+	for _, c := range w.playerHub.connections {
 		c.sendJSON <- NewAckQueueMsg(w.gameQueue, c.id) //send a personalized ack out to each client, including confirmation that they're still inqueue
 	}
 	w.queueMutex.Unlock()
@@ -572,8 +574,10 @@ func (s *gameServer) findMatchByPlayer(id string) int {
 }
 
 func (w *webServer) findMatchByPlayer(id string) *Match {
+	w.gameServerHub.connectionsMx.Lock()
+	defer w.gameServerHub.connectionsMx.Unlock()
 	for _, server := range w.gameServerHub.connections {
-		server := server.(*gameServer)
+		server := server.object.(*gameServer)
 		server.matchesMutex.Lock()
 		defer server.matchesMutex.Unlock()
 		idx := server.findMatchByPlayer(id)
@@ -657,7 +661,7 @@ type Match struct {
 func (w *webServer) getPlayerConns(m *Match) []*connection {
 	s := make([]*connection, 0)
 	for _, playerAdded := range m.players {
-		if _, ok := w.playerHub.connections[playerAdded.Connection]; ok { //if connection still saved in hub
+		if _, ok := w.playerHub.getConn(playerAdded.Steamid); ok { //if connection still saved in hub
 			s = append(s, playerAdded.Connection)
 		}
 	}
@@ -668,10 +672,10 @@ func (w *webServer) getPlayerConns(m *Match) []*connection {
 func (w *webServer) initializeMatch(m *Match) {
 	if m.ServerDetails.Id == "" {
 		log.Printf("Warning: Initializing match with empty server details, defaulting to 1")
-		_, obj := w.gameServerHub.findConnection("1")
-		m.ServerDetails = obj.(*gameServer).Info
+		c, _ := w.gameServerHub.getConn("1")
+		m.ServerDetails = c.object.(*gameServer).Info
 	}
-	c, _ := w.gameServerHub.findConnection(m.ServerDetails.Id) //find connection for this id
+	c, _ := w.gameServerHub.getConn(m.ServerDetails.Id) //find connection for this id
 	if c == nil {
 		alertPlayers(200, "Can't connect to game servers...", w.playerHub)
 		log.Println("No server to send match to. Cancelling match")
@@ -755,8 +759,8 @@ func (w *webServer) newMatchFromMatchmaker(players []PlayerAdded) Match {
 	}
 	w.removePlayersFromQueue(players)
 	m := w.createMatchObject(players, id)
-	_, serv := w.gameServerHub.findConnection(id)
-	sv := serv.(*gameServer)
+	serv, _ := w.gameServerHub.getConn(id)
+	sv := serv.object.(*gameServer)
 	err := sv.assignArena(&m, mgeTrainingV8Arenas)
 	if err != nil {
 		log.Printf("WHAT!!!!!!!!!!! ARENA ASSIGNMENT ERROR!!! %v\n", err)
@@ -778,9 +782,12 @@ func (w *webServer) dummyMatch() (Match, error) { //change string to SteamID2 ty
 
 func (w *webServer) createMatchObject(players []PlayerAdded, server string) Match { //gonna leave server as a param here so I can assign earlier and not return an error here
 	log.Println("Matching together", players[0].Steamid, players[1].Steamid)
-	_, sv := w.gameServerHub.findConnection(server)
+	sv, exists := w.gameServerHub.getConn(server)
+	if !exists {
+		panic("Server doesn't exist")
+	}
 	return Match{
-		ServerDetails: sv.(*gameServer).Info,
+		ServerDetails: sv.object.(*gameServer).Info,
 		Configuration: make(map[string]string),
 		P1id:          players[0].Steamid,
 		P2id:          players[1].Steamid,
@@ -808,6 +815,10 @@ func (w *webServer) waitForReadyUps(m *Match, wg *sync.WaitGroup) {
 	m.timer = time.NewTimer(time.Second*time.Duration(w.rupTime))
 	m.status = matchRupSignal
 	log.Println("Definitely setting match stats to", m.status)
+	sv, _ := w.gameServerHub.getConn("1")
+	sv2, _ := sv.object.(*gameServer)
+	cp := sv2.Matches[m.Arena]
+	log.Println("Copy status is", cp.status)
 	
 	p1 := m.players[0].Steamid
 	p2 := m.players[1].Steamid
@@ -822,8 +833,8 @@ func (w *webServer) waitForReadyUps(m *Match, wg *sync.WaitGroup) {
 			defer w.erMutex.Unlock()
 			delete(w.expectingRup, p1)
 			delete(w.expectingRup, p2)
-			_, serv := w.gameServerHub.findConnection(m.ServerDetails.Id)
-			sv := serv.(*gameServer)
+			serv, _ := w.gameServerHub.getConn(m.ServerDetails.Id)
+			sv := serv.object.(*gameServer)
 			sv.deleteMatch(m.Arena)
 			return
 		case id, ok := <-w.expectingRup[p1]:
@@ -867,7 +878,7 @@ func (w *webServer) expireRup(m *Match, readies ...bool) {
 			w.queueUpdate(false, player)
 		}
 		log.Println("Sending rupsignal expire to", player.id)
-		if _, ok := w.playerHub.connections[player]; ok {
+		if _, ok := w.playerHub.getConn(player.id); ok {
 			player.sendJSON <- NewRupSignalMsg(false, false, m.readyDeadline)
 		} else {
 			log.Printf("Warning: %s conn gone\n", player.id)
@@ -878,7 +889,7 @@ func (w *webServer) expireRup(m *Match, readies ...bool) {
 func (w *webServer) clearAllMatches() {
 	w.queueMutex.Lock()
 	for _, server := range w.gameServerHub.connections {
-		server := server.(*gameServer)
+		server := server.object.(*gameServer)
 		server.matchesMutex.Lock()
 		for _, match := range server.Matches {
 			//Add players back to queue: Not calling expireRup as a shortcut for this because that would send a rupsignal and start a client timer.

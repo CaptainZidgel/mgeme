@@ -140,7 +140,7 @@ type ServerIssue struct { //Used to communicate with users that something is int
 
 func alertPlayers(code int, message string, h *Hub) {
 	msg := ServerIssue{Type: "ServerIssue", Code: code, Message: message}
-	for c := range h.connections {
+	for _, c := range h.connections {
 		c.sendJSON <- msg
 	}
 }
@@ -195,7 +195,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			return fmt.Errorf("Unknown message type: %s", msg.Type)
 		}
 	} else if connType == "game" { //Ensure user connections can't send server messages
-		if conn.h.connections[conn] == struct{}{} { //If server hasn't sent serverHello yet
+		if conn.object == nil { //If server hasn't sent serverHello yet
 			if msg.Type == "ServerHello" {
 				var res ServerHelloWorld
 				err := json.Unmarshal(msg.Payload, &res)
@@ -221,7 +221,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 					Full:    false,
 					matchesMutex: sync.Mutex{},
 				}
-				conn.h.connections[conn] = gs
+				conn.object = gs
 				conn.sendJSON <- newServerAck("") //Let the server know we accepted the connection
 				//TODO: Implement API keying to guarantee game servers are permitted agents. Reject with conn.sendJSON <- newServerAck("Bad API Key")
 			} else {
@@ -238,7 +238,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				if !res.Finished { //forfeit (punish "res.Loser")
 					punishDelinquents([]string{res.Loser})
 				}
-				sv := conn.h.connections[conn].(*gameServer)
+				sv := conn.object.(*gameServer)
 				matchIndex := sv.findMatchByPlayer(res.Winner)
 				for _, player := range sv.Matches[matchIndex].players {
 					player.Connection.sendJSON <- msg
@@ -252,7 +252,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 					return fmt.Errorf("Error unmarshaling MatchCancel %v: %v", msg.Payload, err)
 				}
 				fmt.Printf("Received matchcancel %v\n", res)
-				sv := conn.h.connections[conn].(*gameServer)
+				sv := conn.object.(*gameServer)
 				delinquents := clearEmpties(res.Delinquents)
 				matchIndex := sv.findMatchByPlayer(delinquents[0])
 				if matchIndex == -1 {
@@ -272,12 +272,12 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				if err != nil {
 					return fmt.Errorf("Error unmarshaling MatchBegan %v: %v", msg.Payload, err)
 				}
-				c1, _ := w.playerHub.findConnection(res.P1)
-				c2, _ := w.playerHub.findConnection(res.P2)
-				if c1 != nil {
+				c1, x1 := w.playerHub.getConn(res.P1)
+				c2, x2 := w.playerHub.getConn(res.P2)
+				if c1 != nil && x1 {
 					c1.sendJSON <- msg
 				}
-				if c2 != nil {
+				if c2 != nil && x2 {
 					c2.sendJSON <- msg
 				}
 				m := w.findMatchByPlayer(res.P1)
@@ -286,6 +286,8 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				} else {
 					m.status = matchPlaying
 				}
+			} else if msg.Type == "ServerHello" {
+				return fmt.Errorf("Error: Adtl ServerHellos %+v", conn.object)
 			} else {
 				return fmt.Errorf("Unknown message type: %s", msg.Type)
 			}
