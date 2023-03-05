@@ -103,7 +103,7 @@ type webServer struct {
 
 	queueMutex sync.RWMutex
 
-	expectingRup map[string]bool //I feel like this is too ostentatious for such a small feature but i didnt really feel like redesigning the match storage system.
+	expectingRup map[string]chan string
 	erMutex      sync.Mutex      //maps aren't thread safe
 
 	svSecret string
@@ -120,9 +120,9 @@ func newWebServer() *webServer {
 
 	web.queueMutex = sync.RWMutex{}
 
-	web.expectingRup = make(map[string]bool)
+	web.expectingRup = make(map[string]chan string)
 	web.erMutex = sync.Mutex{}
-
+	
 	web.matchmakerStop = make(chan int, 0)
 
 	return &web
@@ -157,9 +157,10 @@ total:
 						continue
 					}
 					if shouldMatch(a, b) {
-						m := []PlayerAdded{a, b}
-						match := w.newMatchFromMatchmaker(m)
-						go w.sendReadyUpPrompt(&match, nil)
+						matched_requests := []PlayerAdded{a, b}
+						match := w.newMatchFromMatchmaker(matched_requests)
+						log.Printf("$$$$$$$$$$$$ %+v\n", match) 
+						go w.waitForReadyUps(&match, nil)
 						break out
 					}
 				}
@@ -502,12 +503,22 @@ func (w *webServer) resolveConnectingUser(conn *connection) {
 		} else {
 			matchIndex := server.findMatchByPlayer(conn.id)
 			if matchIndex > -1 {
-				log.Printf("Found user in match on server %d, sending to user\n", matchIndex)
-				conn.sendJSON <- server.Matches[matchIndex]
-				break
+				server.matchesMutex.Lock()
+				defer server.matchesMutex.Unlock()
+				log.Printf("Found user in match on server %s arena %d, sending to user. %+v\n", server.Info.Id, matchIndex, server.Matches[matchIndex])
+				m := server.Matches[matchIndex]
+				if m.status == matchInit {
+					log.Printf("Jk lol")
+				} else if m.status == matchRupSignal {
+					conn.sendJSON <- NewRupSignalMsg(true, false, m.readyDeadline)
+				} else if m.status >= matchWaitingForPlayers {
+					conn.sendJSON <- server.Matches[matchIndex]
+				}
+				return
 			}
 		}
 	}
+	log.Println("No match found for reconnecting user")
 }
 
 func (w *webServer) queueUpdate(joining bool, conn *connection) { //The individual act of joining/leaving the queue. Should be followed by SendQueueToClients
@@ -544,11 +555,14 @@ type gameServer struct { //The stuff the webserver will want to know, doesn't ne
 	Matches map[int]*Match //Arena Index to Match. I used a map instead of a slide because not all arenas are used and I found using a slice in this manner too confusing. I kept confusing the slice index and the arena index.
 	Info    matchServerInfo
 	Full    bool //Can we fit more players into these arenas?
+	matchesMutex sync.Mutex
 }
 
 //Find what match contains a certain player (since players can only be in one match at a time, it should be sufficient to only pass one player)
 //Return the index and not the match object since I'll probably be more interested in the match's position in the slice.
 func (s *gameServer) findMatchByPlayer(id string) int {
+	s.matchesMutex.Lock()
+	defer s.matchesMutex.Unlock()
 	for i, m := range s.Matches {
 		if m.P1id == id || m.P2id == id {
 			return i
@@ -559,11 +573,11 @@ func (s *gameServer) findMatchByPlayer(id string) int {
 
 func (w *webServer) findMatchByPlayer(id string) *Match {
 	for _, server := range w.gameServerHub.connections {
-		log.Println("Checking A")
 		server := server.(*gameServer)
+		server.matchesMutex.Lock()
+		defer server.matchesMutex.Unlock()
 		idx := server.findMatchByPlayer(id)
 		if idx > -1 {
-			log.Println("Found")
 			return server.Matches[idx]
 		}
 	}
@@ -571,6 +585,8 @@ func (w *webServer) findMatchByPlayer(id string) *Match {
 }
 
 func (s *gameServer) deleteMatch(ind int) {
+	s.matchesMutex.Lock()
+	defer s.matchesMutex.Unlock()
 	delete(s.Matches, ind)
 }
 
@@ -578,6 +594,8 @@ func (s *gameServer) deleteMatch(ind int) {
 var mgeTrainingV8Arenas = []int{1, 2, 3, 4, 5, 6, 8, 10}
 
 func (s *gameServer) assignArena(m *Match, gamemap []int) error {
+	s.matchesMutex.Lock()
+	defer s.matchesMutex.Unlock()
 	if s.Full {
 		return fmt.Errorf("No room in this server")
 	}
@@ -595,6 +613,9 @@ func (s *gameServer) assignArena(m *Match, gamemap []int) error {
 		} //if undefined or defined as nil, the arena is free
 		m.Arena = arena_index
 		s.Matches[arena_index] = m
+		if i == len(gamemap)-1 {
+			s.Full = true
+		}
 		return nil
 	}
 	return nil
@@ -624,10 +645,11 @@ type Match struct {
 	P2id            string            `json:"p2Id"`
 	Configuration   map[string]string `json:"matchCfg"` //reserved: configuration may be something like "scout vs scout" or "demo vs demo" perhaps modeled as "cfg": "svs" or p1class : p2class
 	ServerDetails   matchServerInfo   `json:"gameServer"`
-	Status          int
 	ConnectDeadline int64 `json:"deadline"` //Not set until match initialization. Though this deadline is not used by the server, it will be useful to the client.
 
-	timer   *time.Timer   //no json tag!! Don't serialize it!!
+	readyDeadline time.Time
+	status  int
+	timer   *time.Timer
 	players []PlayerAdded //we embed the entire PlayerAdded object so we can remove them from queue but add them back with data unchanged when necessary
 }
 
@@ -649,7 +671,7 @@ func (w *webServer) initializeMatch(m *Match) {
 		_, obj := w.gameServerHub.findConnection("1")
 		m.ServerDetails = obj.(*gameServer).Info
 	}
-	c, obj := w.gameServerHub.findConnection(m.ServerDetails.Id) //find connection for this id
+	c, _ := w.gameServerHub.findConnection(m.ServerDetails.Id) //find connection for this id
 	if c == nil {
 		alertPlayers(200, "Can't connect to game servers...", w.playerHub)
 		log.Println("No server to send match to. Cancelling match")
@@ -657,15 +679,9 @@ func (w *webServer) initializeMatch(m *Match) {
 		w.clearAllMatches()
 		return
 	}
-	m.Status = matchWaitingForPlayers
+	m.status = matchWaitingForPlayers
 	m.Type = "MatchDetails"
 	m.ConnectDeadline = time.Now().Add(time.Second * 180).Unix()
-
-	sv := obj.(*gameServer) //get server object
-	err := sv.assignArena(m, mgeTrainingV8Arenas)
-	if err != nil {
-		log.Fatalf("this server is full. How could you do this.")
-	}
 
 	c.sendJSON <- m //Sends match details to the gameserver (sourcemod)
 	for _, player := range w.getPlayerConns(m) {
@@ -738,7 +754,14 @@ func (w *webServer) newMatchFromMatchmaker(players []PlayerAdded) Match {
 		log.Fatal("Tried to establish match with more than 2 players")
 	}
 	w.removePlayersFromQueue(players)
-	return w.createMatchObject(players, id)
+	m := w.createMatchObject(players, id)
+	_, serv := w.gameServerHub.findConnection(id)
+	sv := serv.(*gameServer)
+	err := sv.assignArena(&m, mgeTrainingV8Arenas)
+	if err != nil {
+		log.Printf("WHAT!!!!!!!!!!! ARENA ASSIGNMENT ERROR!!! %v\n", err)
+	}
+	return m
 }
 
 func (w *webServer) dummyMatch() (Match, error) { //change string to SteamID2 type?
@@ -762,63 +785,66 @@ func (w *webServer) createMatchObject(players []PlayerAdded, server string) Matc
 		P1id:          players[0].Steamid,
 		P2id:          players[1].Steamid,
 		timer:         nil,
-		Status:        matchInit,
+		status:        matchInit,
 		players:       players,
+		readyDeadline: now().Add(time.Second*time.Duration(w.rupTime)),
 	}
 }
 
-func (w *webServer) sendReadyUpPrompt(m *Match, wg *sync.WaitGroup) {
+func (w *webServer) waitForReadyUps(m *Match, wg *sync.WaitGroup) {
 	if wg != nil {
 		defer wg.Done()
 	} else {
-		log.Println("Warning: no waitgroup for sendReadyUpPrompt")
+		log.Println("Warning: no waitgroup for waitForReadyUps")
 	}
 	for _, player := range w.getPlayerConns(m) {
-		if player == nil { //players is a slice of pointers, which could have been nilled out by this point
-			log.Println("Couldn't send rup signal to player (no connection object)", player)
-		} else {
-			player.sendJSON <- NewRupSignalMsg(true, false, w.rupTime)
-			w.erMutex.Lock()
-			w.expectingRup[player.id] = true
-			w.erMutex.Unlock()
+		if player != nil { //only attempt to send json to active conns
+			player.sendJSON <- NewRupSignalMsg(true, false, m.readyDeadline)
 		}
+		w.erMutex.Lock()
+		w.expectingRup[player.id] = make(chan string, 0) //We are expecting a rup from this player, even if their conn is gone.
+		w.erMutex.Unlock()
 	}
-	m.timer = time.NewTimer(time.Second * time.Duration(w.rupTime))
-	m.Status = matchRupSignal
-
-	p1 := m.players[0].Connection
-	p2 := m.players[1].Connection
-	p1ready := false
-	p2ready := false
-	for !(p1ready && p2ready) { //while not both players readied
+	m.timer = time.NewTimer(time.Second*time.Duration(w.rupTime))
+	m.status = matchRupSignal
+	log.Println("Definitely setting match stats to", m.status)
+	
+	p1 := m.players[0].Steamid
+	p2 := m.players[1].Steamid
+	var p1ready bool
+	var p2ready bool
+	for !(p1ready && p2ready) {
 		select {
-		case <-m.timer.C: //Block until timer reaches maturity
+		case <-m.timer.C:
 			log.Println("Rup timer expired.")
 			w.expireRup(m, p1ready, p2ready)
 			w.erMutex.Lock()
-			delete(w.expectingRup, p1.id)
-			delete(w.expectingRup, p2.id)
-			w.erMutex.Unlock()
+			defer w.erMutex.Unlock()
+			delete(w.expectingRup, p1)
+			delete(w.expectingRup, p2)
+			_, serv := w.gameServerHub.findConnection(m.ServerDetails.Id)
+			sv := serv.(*gameServer)
+			sv.deleteMatch(m.Arena)
 			return
-		case x := <-p1.playerReady: //r1 receives a true only when the client sends a message. could receive a false (zero-value) when the channel is closed.
-			if x {
+		case id, ok := <-w.expectingRup[p1]:
+			if ok {
+				log.Printf("%s has readied\n", id)
+				w.erMutex.Lock()
+				delete(w.expectingRup, id)
+				w.erMutex.Unlock() //not deferring because we can't want to wait until the function returns
 				p1ready = true
-				log.Printf("%s has readied\n", p1.id)
-				w.erMutex.Lock()
-				delete(w.expectingRup, p1.id)
-				w.erMutex.Unlock()
 			} else {
-				log.Printf("Warning: reading from closed playerReady channel. user %s\n", p1.id) //You don't want to see this buddy! Thankfully I only see it in my messed up tests
+				log.Println("Warning: Reading closed expectingRup", p1)
 			}
-		case x := <-p2.playerReady:
-			if x {
-				p2ready = true
-				log.Printf("%s has readied\n", p1.id)
+		case id, ok := <-w.expectingRup[p2]:
+			if ok {
+				log.Printf("%s has readied\n", id)
 				w.erMutex.Lock()
-				delete(w.expectingRup, p2.id)
+				delete(w.expectingRup, id)
 				w.erMutex.Unlock()
+				p2ready = true
 			} else {
-				log.Printf("Warning: reading from closed playerReady channel. user %s\n", p2.id)
+				log.Println("Warning: Reading closed expectingRup", p2)
 			}
 		}
 	}
@@ -842,7 +868,9 @@ func (w *webServer) expireRup(m *Match, readies ...bool) {
 		}
 		log.Println("Sending rupsignal expire to", player.id)
 		if _, ok := w.playerHub.connections[player]; ok {
-			player.sendJSON <- NewRupSignalMsg(false, false, w.rupTime)
+			player.sendJSON <- NewRupSignalMsg(false, false, m.readyDeadline)
+		} else {
+			log.Printf("Warning: %s conn gone\n", player.id)
 		}
 	}
 }
@@ -851,6 +879,7 @@ func (w *webServer) clearAllMatches() {
 	w.queueMutex.Lock()
 	for _, server := range w.gameServerHub.connections {
 		server := server.(*gameServer)
+		server.matchesMutex.Lock()
 		for _, match := range server.Matches {
 			//Add players back to queue: Not calling expireRup as a shortcut for this because that would send a rupsignal and start a client timer.
 			for _, p := range match.players {
@@ -858,6 +887,7 @@ func (w *webServer) clearAllMatches() {
 			}
 		}
 		server.Matches = make(map[int]*Match)
+		server.matchesMutex.Unlock()
 	}
 	w.queueMutex.Unlock()
 	w.sendQueueToClients()

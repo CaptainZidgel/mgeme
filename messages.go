@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"time"
+	"log"
+	"sync"
 )
 
 //helper function
@@ -124,8 +125,8 @@ type RupSignal struct {
 	ExpireAt   int64  `json:"expireAt"`
 }
 
-func NewRupSignalMsg(show bool, selfrupped bool, deadline int) RupSignal { //I should move to this format for all messages sent from Go server so I don't need to rewrite type
-	return RupSignal{Type: "RupSignal", ShowPrompt: show, SelfRupped: selfrupped, ExpireAt: now().Add(time.Second * time.Duration(deadline)).Unix()}
+func NewRupSignalMsg(show bool, selfrupped bool, deadline time.Time) RupSignal { //I should move to this format for all messages sent from Go server so I don't need to rewrite type
+	return RupSignal{Type: "RupSignal", ShowPrompt: show, SelfRupped: selfrupped, ExpireAt: deadline.Unix()}
 }
 
 type ServerIssue struct { //Used to communicate with users that something is interrupting the service (ie, a gameserver is down, the webserver is erroring, idk something like that
@@ -160,12 +161,11 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			w.queueUpdate(res.Joining, conn) //Update the server's master queue
 		} else if msg.Type == "Ready" {
 			w.erMutex.Lock()
-			if w.expectingRup[conn.id] {
-				w.erMutex.Unlock()
-				conn.playerReady <- true
+			defer w.erMutex.Unlock()
+			if c, ok := w.expectingRup[conn.id]; ok {
+				c <- conn.id
 			} else {
-				w.erMutex.Unlock()
-				log.Println("Warning: out of period rup signal")
+				log.Println("Warning: out of period rup signal:", conn.id)
 			}
 		} else if msg.Type == "TestMatch" {
 			var res TestMatch
@@ -175,7 +175,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				if err != nil {
 					log.Fatalf("%v", err)
 				}
-				go w.sendReadyUpPrompt(&m, nil)
+				go w.waitForReadyUps(&m, nil)
 			} else if res.X == "1v_" {
 				m := &Match{
 					Arena:   1,
@@ -219,6 +219,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 					},
 					Matches: make(map[int]*Match),
 					Full:    false,
+					matchesMutex: sync.Mutex{},
 				}
 				conn.h.connections[conn] = gs
 				conn.sendJSON <- newServerAck("") //Let the server know we accepted the connection
@@ -283,7 +284,7 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 				if m == nil {
 					log.Println("MatchBegan... but no match?")
 				} else {
-					m.Status = matchPlaying
+					m.status = matchPlaying
 				}
 			} else {
 				return fmt.Errorf("Unknown message type: %s", msg.Type)

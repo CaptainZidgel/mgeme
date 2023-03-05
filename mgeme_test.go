@@ -43,6 +43,7 @@ func makeWsURL(server *httptest.Server, endpoint string) string {
 }
 
 func readWaitFor(ws *websocket.Conn, ty string, t *testing.T, logDiscards bool) []byte {
+	t.Logf("BLOCKING IN TEST: Waiting for message type %s\n", ty)
 	for {
 		_, m, rerr := ws.ReadMessage()
 		if rerr != nil {
@@ -234,6 +235,7 @@ func TestReadyUp(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			mgeme := newWebServerWithSecret(TestSecret)
+			mgeme.rupTime = 3
 			sv := createServerHandler(mgeme, defaultErrHandler, t)
 
 			gameConn, server := createServerAndGameConns(t, sv, true)
@@ -263,9 +265,9 @@ func TestReadyUp(t *testing.T) {
 			require.NoErrorf(t, err, "Error forming dummy match: %v", err)
 			var wgSendPrompt sync.WaitGroup
 			wgSendPrompt.Add(1)
-			go mgeme.sendReadyUpPrompt(&match, &wgSendPrompt)
+			go mgeme.waitForReadyUps(&match, &wgSendPrompt)
 
-			expected_rs := NewRupSignalMsg(true, false, mgeme.rupTime)
+			expected_rs := NewRupSignalMsg(true, false, now().Add(time.Second*time.Duration(mgeme.rupTime)))
 			msg := readWaitFor(wsConnA, "RupSignal", t, false)
 			var rs RupSignal
 			json.Unmarshal(msg, &rs)
@@ -637,7 +639,9 @@ func TestMatchmakerGuarantee(t *testing.T) {
 	mgeme.queueUpdate(true, B)
 
 	cond := func() bool {
-		return mgeme.expectingRup["A"] && mgeme.expectingRup["B"]
+		_, okA := mgeme.expectingRup["A"]
+		_, okB := mgeme.expectingRup["B"]
+		return okA && okB
 	}
 
 	require.Eventually(t, cond, 5*time.Second, 100*time.Millisecond) //since A and B both have equal elos (default of 1600) they should be matched basically immediately.
