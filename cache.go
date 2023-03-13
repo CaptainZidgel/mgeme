@@ -72,7 +72,6 @@ func getSteamSummary(id string) (steamweb.PlayerSummary, error) {
 		return s, nil
 	} else {
 		s := v.(steamweb.PlayerSummary)
-		log.Println("Cache hit", s)
 		return s, nil
 	}
 }

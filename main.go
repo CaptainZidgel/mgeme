@@ -453,14 +453,14 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) error {
 		}
 
 		var id string
-		if lgdin {
+		if lgdin && hubtype == "user" {
 			id = usr.(User).id //cast the context var to a User type
 		}
 
 		clientConn := &connection{
 			sendText:    make(chan []byte, 256),
 			sendJSON:    make(chan interface{}, 1024),
-			playerReady: make(chan bool, 0),
+			playerReady: make(chan int, 0),
 			h:           hub,
 			id:          id,
 		} //create our ws connection object
@@ -483,7 +483,6 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) error {
 			delete(w.expectingRup, id)
 			w.erMutex.Unlock()
 		}
-		log.Println("Closing conn")
 		wsConn.WriteControl(websocket.CloseMessage, []byte{}, time.Now().Add(time.Second))
 		wsConn.Close()
 	} else { //Neither a logged in user, not a game server.
@@ -496,8 +495,8 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) error {
 //When a user closes or refreshes a tab, that closes the websocket (code 1001, navigated away). I know yet how much info I want to preserve across sessions
 func (w *webServer) resolveConnectingUser(conn *connection) {
 	log.Println("Resolving reconnected user")
-	w.gameServerHub.connectionsMx.Lock()
-	defer w.gameServerHub.connectionsMx.Unlock()
+	w.gameServerHub.connectionsMx.RLock()
+	defer w.gameServerHub.connectionsMx.RUnlock()
 	for _, server := range w.gameServerHub.connections {
 		server, ok := server.object.(*gameServer)
 		if !ok {
@@ -574,8 +573,8 @@ func (s *gameServer) findMatchByPlayer(id string) int {
 }
 
 func (w *webServer) findMatchByPlayer(id string) *Match {
-	w.gameServerHub.connectionsMx.Lock()
-	defer w.gameServerHub.connectionsMx.Unlock()
+	w.gameServerHub.connectionsMx.RLock()
+	defer w.gameServerHub.connectionsMx.RUnlock()
 	for _, server := range w.gameServerHub.connections {
 		server := server.object.(*gameServer)
 		server.matchesMutex.Lock()
@@ -675,8 +674,8 @@ func (w *webServer) initializeMatch(m *Match) {
 		c, _ := w.gameServerHub.getConn("1")
 		m.ServerDetails = c.object.(*gameServer).Info
 	}
-	c, _ := w.gameServerHub.getConn(m.ServerDetails.Id) //find connection for this id
-	if c == nil {
+	c, x := w.gameServerHub.getConn(m.ServerDetails.Id) //find connection for this id
+	if !x {
 		alertPlayers(200, "Can't connect to game servers...", w.playerHub)
 		log.Println("No server to send match to. Cancelling match")
 		//Cancel matchmaker until servers come back online? Probably using a channel, mmSentinel <- 1
@@ -777,7 +776,9 @@ func (w *webServer) dummyMatch() (Match, error) { //change string to SteamID2 ty
 	id := w.getFreeServer()
 	//remove players from queue, update queue for all players
 	w.removePlayersFromQueue(players)
-	return w.createMatchObject(players, id), nil
+	m := w.createMatchObject(players, id)
+	m.Arena = 1
+	return m, nil
 }
 
 func (w *webServer) createMatchObject(players []PlayerAdded, server string) Match { //gonna leave server as a param here so I can assign earlier and not return an error here
@@ -815,10 +816,6 @@ func (w *webServer) waitForReadyUps(m *Match, wg *sync.WaitGroup) {
 	m.timer = time.NewTimer(time.Second*time.Duration(w.rupTime))
 	m.status = matchRupSignal
 	log.Println("Definitely setting match stats to", m.status)
-	sv, _ := w.gameServerHub.getConn("1")
-	sv2, _ := sv.object.(*gameServer)
-	cp := sv2.Matches[m.Arena]
-	log.Println("Copy status is", cp.status)
 	
 	p1 := m.players[0].Steamid
 	p2 := m.players[1].Steamid
@@ -837,21 +834,21 @@ func (w *webServer) waitForReadyUps(m *Match, wg *sync.WaitGroup) {
 			sv := serv.object.(*gameServer)
 			sv.deleteMatch(m.Arena)
 			return
-		case id, ok := <-w.expectingRup[p1]:
+		case _, ok := <-m.players[0].Connection.playerReady:
 			if ok {
-				log.Printf("%s has readied\n", id)
+				log.Printf("%s has readied\n", p1)
 				w.erMutex.Lock()
-				delete(w.expectingRup, id)
+				delete(w.expectingRup, p1)
 				w.erMutex.Unlock() //not deferring because we can't want to wait until the function returns
 				p1ready = true
 			} else {
 				log.Println("Warning: Reading closed expectingRup", p1)
 			}
-		case id, ok := <-w.expectingRup[p2]:
+		case _, ok := <-m.players[1].Connection.playerReady:
 			if ok {
-				log.Printf("%s has readied\n", id)
+				log.Printf("%s has readied\n", p2)
 				w.erMutex.Lock()
-				delete(w.expectingRup, id)
+				delete(w.expectingRup, p2)
 				w.erMutex.Unlock()
 				p2ready = true
 			} else {
@@ -913,7 +910,7 @@ func (w *webServer) removePlayersFromQueue(players []PlayerAdded) {
 
 func NewFakeConnection() *connection {
 	return &connection{
-		playerReady: make(chan bool, 9999),
+		playerReady: make(chan int, 9999),
 		sendJSON:    make(chan interface{}, 9999),
 	}
 }

@@ -28,8 +28,8 @@ func newHub(hubType string) *Hub {
 }
 
 func (h *Hub) getConn(id string) (*connection, bool) {
-	h.connectionsMx.Lock()
-	defer h.connectionsMx.Unlock()
+	h.connectionsMx.RLock()
+	defer h.connectionsMx.RUnlock()
 	conn, exists := h.connections[id]
 	return conn, exists
 }
@@ -52,7 +52,7 @@ func (h *Hub) addConnection(conn *connection) {
 		log.Println("Adding new gameserver with id", conn.id)
 	}
 	h.connections[conn.id] = conn
-	log.Printf("Added connection to %s hub", h.hubType)
+	log.Printf("Added connection to %s hub, id %s", h.hubType, conn.id)
 	if h.hubType == "game" {
 		conn.sendJSON <- &HelloWorld{Hello: "World!"}
 	}

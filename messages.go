@@ -161,9 +161,10 @@ func (w *webServer) HandleMessage(msg Message, steamid string, conn *connection)
 			w.queueUpdate(res.Joining, conn) //Update the server's master queue
 		} else if msg.Type == "Ready" {
 			w.erMutex.Lock()
-			defer w.erMutex.Unlock()
-			if c, ok := w.expectingRup[conn.id]; ok {
-				c <- conn.id
+			_, ok := w.expectingRup[conn.id]
+			w.erMutex.Unlock()
+			if ok {
+				conn.playerReady <- 1
 			} else {
 				log.Println("Warning: out of period rup signal:", conn.id)
 			}

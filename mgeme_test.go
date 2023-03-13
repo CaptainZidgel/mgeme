@@ -247,11 +247,13 @@ func TestReadyUp(t *testing.T) {
 			players := make(map[string]*websocket.Conn)
 			var mario *connection
 			var luigi *connection
-
+			var x bool
+			var xx bool
+			
 			player_cond := func() bool {
-				mario, _ = mgeme.playerHub.findConnection("Mario")
-				luigi, _ = mgeme.playerHub.findConnection("Luigi")
-				return mario != nil && luigi != nil
+				mario, x = mgeme.playerHub.getConn("Mario")
+				luigi, xx = mgeme.playerHub.getConn("Luigi")
+				return x && xx
 			}
 
 			require.Eventuallyf(t, player_cond, 1*time.Second, 10*time.Millisecond, "Player conns shouldn't be nil in test %s", test.name)
@@ -279,10 +281,17 @@ func TestReadyUp(t *testing.T) {
 				go func(id string, conn *websocket.Conn) {
 					defer wgSendingRups.Done()
 					seconds, exists := test.responders[id]
+					mgeme.erMutex.Lock()
+					_, ok := mgeme.expectingRup[id]
+					mgeme.erMutex.Unlock()
 					if exists {
 						<-time.After(time.Duration(seconds) * time.Second)
-						t.Log("Test-Sending rup signal....")
-						conn.WriteJSON(Message{Type: "Ready"})
+						if ok {
+							t.Log("Test-Sending rup signal....")
+							conn.WriteJSON(Message{Type: "Ready"})
+						} else {
+							t.Log("Test-No rup expected")
+						}
 					}
 				}(id, conn)
 			}
@@ -297,9 +306,9 @@ func TestReadyUp(t *testing.T) {
 			_ = readWaitFor(wsConnA, "RupSignal", t, false)
 			require.Eventuallyf(t, queue_cond, 500*time.Millisecond, 10*time.Millisecond, "Queues should be equal in test %s", test.name)
 			if test.matchOrQueue == "m" {
-				_, obj := mgeme.gameServerHub.findConnection("1")
+				c, _ := mgeme.gameServerHub.getConn("1")
 				<-time.After(500 * time.Millisecond)
-				require.True(t, obj.(*gameServer).findMatchByPlayer("Mario") != -1)
+				require.True(t, c.object.(*gameServer).findMatchByPlayer("Mario") != -1)
 			}
 			wgSendPrompt.Wait()
 
@@ -437,20 +446,24 @@ func TestDelinquency(t *testing.T) {
 	defer gameConn.Close()
 	defer server.Close()
 
-	gc, obj := mgeme.gameServerHub.findConnection("1")
-	require.NotNil(t, gc, "Game server should be found")
-	require.NotNil(t, obj, "Game object should not be nil")
-	gsv := obj.(*gameServer)
+	gc, exists := mgeme.gameServerHub.getConn("1")
+	require.True(t, exists, "Game server should be found")
+	require.NotNil(t, gc.object, "Game object should not be nil")
+	gsv := gc.object.(*gameServer)
 
-	A, _ := mgeme.playerHub.findConnection("765611A")
-	B, _ := mgeme.playerHub.findConnection("B")
+	A, _ := mgeme.playerHub.getConn("765611A")
+	B, _ := mgeme.playerHub.getConn("B")
 
 	match := mgeme.createMatchObject([]PlayerAdded{
 		PlayerAdded{Connection: A, Steamid: "765611A"}, PlayerAdded{Connection: B, Steamid: "B"},
 	}, "1")
+	gsv.assignArena(&match, mgeTrainingV8Arenas)
 	go mgeme.initializeMatch(&match)
 
-	_ = readWaitFor(gameConn, "MatchDetails", t, false)
+	amsg := readWaitFor(gameConn, "MatchDetails", t, true)
+	var md Match
+	json.Unmarshal(amsg, &md)
+	t.Logf("%+v\n", md)
 	require.Equal(t, 1, len(gsv.Matches), "Should only have 1 match")
 
 	msg := WrapMessage("MatchCancel", MatchCancel{
@@ -594,9 +607,9 @@ func TestFailServerHello(t *testing.T) {
 	require.NoErrorf(t, err, "JSON writing error %v", err)
 
 	cond := func() bool {
-		_, o := mgeme.gameServerHub.findConnection("1")
-		if o != nil && o != struct{}{} {
-			_, ok := o.(*gameServer)
+		c, exists := mgeme.gameServerHub.getConn("1")
+		if exists && c.object != struct{}{} {
+			_, ok := c.object.(*gameServer)
 			if ok {
 				return true
 			}
