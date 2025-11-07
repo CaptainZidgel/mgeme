@@ -67,9 +67,6 @@ func getRGLBan(player rgl.Player) *ban {
 	}
 }
 
-//This variable can be overwritten in a test to replace time.Now() with whatever time we want
-var now = time.Now
-
 //Create a new ban struct with a level of -1 or 0 and apply the penalty if 0.
 func createBan(steamid string, leveled bool) *ban {
 	b := &ban{steamid: steamid}

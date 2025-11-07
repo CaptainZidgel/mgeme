@@ -27,6 +27,9 @@ import (
 	"time"
 )
 
+//This variable can be overwritten in a test to replace time.Now() with whatever time we want
+var now = time.Now
+
 type User struct {
 	id       string
 	elo      int
@@ -187,7 +190,7 @@ func main() {
 	}
 
 	if err := steamweb.SetKey(conf.SteamToken); err != nil {
-		log.Fatal("Error setting steam token: ", err)
+		log.Print("Error setting steam token: ", err)
 	}
 
 	//wsHostPtr := flag.String("addr", getOutboundIp(), "Address to listen on (Relayed to clients to know where to send messages to, ie 'localhost' on windows)")

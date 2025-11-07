@@ -1,11 +1,10 @@
-go 1.18
+go 1.25
 
 module github.com/captainzidgel/mgeme
 
 require (
 	github.com/captainzidgel/rgl v0.0.1
 	github.com/dgraph-io/ristretto v0.1.1
-	github.com/gin-contrib/multitemplate v0.0.0-20220829131020-8c2a8441bc2b
 	github.com/gin-contrib/sessions v0.0.5
 	github.com/gin-gonic/gin v1.8.2
 	github.com/go-sql-driver/mysql v1.7.0
