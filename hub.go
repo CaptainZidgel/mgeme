@@ -45,6 +45,8 @@ func newHub(hubType string) *Hub {
 }
 
 func (h *Hub) findConnection(id string) (*connection, interface{}) {
+	h.connectionsMx.Lock()
+	defer h.connectionsMx.Unlock()
 	for conn, object := range h.connections {
 		if conn.id == id {
 			return conn, object

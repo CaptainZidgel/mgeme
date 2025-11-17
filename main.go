@@ -467,15 +467,17 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) error {
 			id:          id,
 		} //create our ws connection object
 		hub.addConnection(clientConn) //Add our connection to the hub
-		if hubtype == "user" {
+        if hubtype == "user" {
 			clientConn.sendJSON <- NewAckQueueMsg(w.gameQueue, id)
+            hub.connectionsMx.Lock()
 			hub.connections[clientConn] = usr.(User)
+            hub.connectionsMx.Unlock()
 			w.resolveConnectingUser(clientConn)
 		}
 		defer hub.removeConnection(clientConn)
 		var wg sync.WaitGroup
 		wg.Add(2)
-		hub.connectionsMx.Lock()
+        hub.connectionsMx.Lock()
 		go clientConn.writer(&wg, wsConn)
 		go clientConn.reader(&wg, wsConn, w)
 		hub.connectionsMx.Unlock()
@@ -498,6 +500,8 @@ func (w *webServer) WsServer(c *gin.Context, hubtype string) error {
 //When a user closes or refreshes a tab, that closes the websocket (code 1001, navigated away). I know yet how much info I want to preserve across sessions
 func (w *webServer) resolveConnectingUser(conn *connection) {
 	log.Println("Resolving reconnected user")
+	w.gameServerHub.connectionsMx.Lock()
+	defer w.gameServerHub.connectionsMx.Unlock()
 	for _, server := range w.gameServerHub.connections {
 		server, ok := server.(*gameServer)
 		if !ok {
@@ -516,6 +520,7 @@ func (w *webServer) resolveConnectingUser(conn *connection) {
 func (w *webServer) queueUpdate(joining bool, conn *connection) { //The individual act of joining/leaving the queue. Should be followed by SendQueueToClients
 	steamid := conn.id
 	w.queueMutex.Lock()
+	w.playerHub.connectionsMx.Lock()
 	if joining { //add to queue
 		user, ok := w.playerHub.connections[conn].(User)
 		if !ok {
@@ -532,15 +537,18 @@ func (w *webServer) queueUpdate(joining bool, conn *connection) { //The individu
 		log.Printf("Removing %s from queue\n", conn.id)
 	}
 	w.queueMutex.Unlock()
+	w.playerHub.connectionsMx.Unlock() //we can't defer these because sendQueueToClients has a lock in it
 	w.sendQueueToClients()
 }
 
 func (w *webServer) sendQueueToClients() {
 	w.queueMutex.Lock()
+	w.playerHub.connectionsMx.Lock()
+	defer w.queueMutex.Unlock()
+	defer w.playerHub.connectionsMx.Unlock()
 	for c := range w.playerHub.connections {
 		c.sendJSON <- NewAckQueueMsg(w.gameQueue, c.id) //send a personalized ack out to each client, including confirmation that they're still inqueue
 	}
-	w.queueMutex.Unlock()
 }
 
 type gameServer struct { //The stuff the webserver will want to know, doesn't necessarily have info like the IP as that isn't necessary.
@@ -561,6 +569,8 @@ func (s *gameServer) findMatchByPlayer(id string) int {
 }
 
 func (w *webServer) findMatchByPlayer(id string) *Match {
+	w.gameServerHub.connectionsMx.Lock()
+	defer w.gameServerHub.connectionsMx.Unlock()
 	for _, server := range w.gameServerHub.connections {
 		log.Println("Checking A")
 		server := server.(*gameServer)
@@ -636,6 +646,8 @@ type Match struct {
 
 //The match object holds a table of PlayerAdded (queue items) so if the match is cancelled the queue can be restored. However these connections could have died at any point.
 func (w *webServer) getPlayerConns(m *Match) []*connection {
+	w.playerHub.connectionsMx.Lock()
+	defer w.playerHub.connectionsMx.Unlock()
 	s := make([]*connection, 0)
 	for _, playerAdded := range m.players {
 		if _, ok := w.playerHub.connections[playerAdded.Connection]; ok { //if connection still saved in hub
@@ -836,6 +848,7 @@ func (w *webServer) expireRup(m *Match, readies ...bool) {
 	log.Println("Killing rup timer, player 1 and 2 back to queue?:", readies)
 	m.timer.Stop() //Stop the timer, if it hasn't executed yet
 	m.timer = nil
+	//this will infinite lock because queueUpdate contains a connectionsMx lock.
 	for i, player := range m.players {
 		player := player.Connection
 		if readies[i] == true { //player was ready when timer ended, add them back to queue
@@ -844,14 +857,19 @@ func (w *webServer) expireRup(m *Match, readies ...bool) {
 			w.queueUpdate(false, player)
 		}
 		log.Println("Sending rupsignal expire to", player.id)
+		w.playerHub.connectionsMx.Lock()
 		if _, ok := w.playerHub.connections[player]; ok {
 			player.sendJSON <- NewRupSignalMsg(false, false, w.rupTime)
 		}
+		w.playerHub.connectionsMx.Unlock()
 	}
 }
 
 func (w *webServer) clearAllMatches() {
 	w.queueMutex.Lock()
+	w.gameServerHub.connectionsMx.Lock()
+	defer w.queueMutex.Unlock()
+	defer w.gameServerHub.connectionsMx.Unlock()
 	for _, server := range w.gameServerHub.connections {
 		server := server.(*gameServer)
 		for _, match := range server.Matches {
@@ -862,14 +880,15 @@ func (w *webServer) clearAllMatches() {
 		}
 		server.Matches = make(map[int]*Match)
 	}
-	w.queueMutex.Unlock()
 	w.sendQueueToClients()
 }
 
 func (w *webServer) removePlayersFromQueue(players []PlayerAdded) {
+	w.queueMutex.Lock()
 	for _, p := range players {
 		delete(w.gameQueue, p.Steamid)
 	}
+	w.queueMutex.Unlock()
 	w.sendQueueToClients()
 }
 
